@@ -3,6 +3,9 @@
 /stockagent.exe
 /dist/
 
+# 前端依赖
+/web/node_modules/
+
 # 测试与覆盖率
 *.test
 *.out

@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/analyze", s.handleAnalyze)
+	mux.Handle("GET /", staticHandler()) // Web UI (SPA), API 路由优先匹配
 	return cors(mux)
 }
 

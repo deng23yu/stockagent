@@ -79,6 +79,15 @@ stockagent analyze 600519 --model deepseek-reasoner
 | `-o, --output` | stdout | Write to a file |
 | `--model` / `--base-url` / `--api-key` | - | Override config |
 
+## Web UI (embedded frontend)
+
+Once `stockagent serve` is running, open `http://127.0.0.1:8080/` — the single-page app is embedded in the binary, nothing else to deploy.
+
+*(screenshot to be added)*
+
+Highlights: Kimi-style light design, staged analyst progress animation, signal cards with confidence bars, verdict card, cached-result badge.
+Stack: Vite + React + TypeScript + Tailwind CSS v4, embedded via `go:embed` (source in `web/`; after changes run `npm run build` and commit `web/dist`).
+
 ## HTTP API (server mode)
 
 ```bash

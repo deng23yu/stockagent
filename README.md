@@ -123,6 +123,15 @@ stockagent analyze 600519 --model deepseek-reasoner
 | `-o, --output` | stdout | 输出到文件 |
 | `--model` / `--base-url` / `--api-key` | - | 覆盖配置 |
 
+## Web UI (内嵌前端)
+
+`stockagent serve` 启动后直接访问 `http://127.0.0.1:8080/` —— 单页应用已内嵌进二进制，无需额外部署。
+
+*(截图待补充)*
+
+特性: Kimi 官网风浅色设计、搜索即搜即得、分析师分步加载动画、信号卡/置信度条/综合结论卡片、缓存结果徽章。
+技术栈: Vite + React + TypeScript + Tailwind CSS v4，产物经 `go:embed` 嵌入 (源码在 `web/`，改动后 `npm run build` 并提交 `web/dist`)。
+
 ## HTTP API (服务端模式)
 
 ```bash

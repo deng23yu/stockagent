@@ -1,0 +1,114 @@
+import { useCallback, useRef, useState } from 'react'
+import { AlertTriangle, Sparkles } from 'lucide-react'
+import { analyzeStock, type Report } from './lib/api'
+import SearchBar from './components/SearchBar'
+import LoadingState from './components/LoadingState'
+import ReportHeader from './components/ReportHeader'
+import SignalCards from './components/SignalCards'
+import VerdictCard from './components/VerdictCard'
+import Footer from './components/Footer'
+
+type Status =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'success'; report: Report; cached: boolean }
+  | { kind: 'error'; message: string }
+
+export default function App() {
+  const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const abortRef = useRef<AbortController | null>(null)
+
+  const onSearch = useCallback(async (code: string, source: string) => {
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+    setStatus({ kind: 'loading' })
+    try {
+      const { report, cached } = await analyzeStock(code, source, ac.signal)
+      setStatus({ kind: 'success', report, cached })
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      setStatus({ kind: 'error', message: (e as Error).message })
+    }
+  }, [])
+
+  return (
+    <div className="relative min-h-screen">
+      {/* 顶部蓝紫光晕 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(60%_100%_at_50%_0%,rgba(91,91,214,0.10),transparent)]"
+      />
+      <div className="relative mx-auto max-w-3xl px-5 pb-24">
+        <header className="fade-up flex items-center gap-2.5 py-7">
+          <div className="shadow-pop flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-white">
+            <Sparkles size={18} />
+          </div>
+          <div>
+            <div className="text-[15px] font-semibold tracking-tight">stockagent</div>
+            <div className="text-xs text-ink-3">A 股 AI 投研多智能体</div>
+          </div>
+          <a
+            className="ml-auto text-xs text-ink-3 transition-colors hover:text-ink-2"
+            href="https://github.com/deng23yu/stockagent"
+            target="_blank"
+            rel="noreferrer"
+          >
+            GitHub
+          </a>
+        </header>
+
+        <section className="fade-up mb-8 mt-10 text-center [animation-delay:60ms]">
+          <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-[44px]">
+            一条命令，看懂一只股票
+          </h1>
+          <p className="mt-4 text-[15px] leading-7 text-ink-2">
+            四位 AI 分析师并行研判，组合经理汇总成一份中文投研报告。
+            <br className="hidden sm:block" />
+            数据免费，模型自备，仅供学习研究。
+          </p>
+        </section>
+
+        <SearchBar onSearch={onSearch} loading={status.kind === 'loading'} />
+
+        <main className="mt-10 space-y-4">
+          {status.kind === 'idle' && <IdleHint />}
+          {status.kind === 'loading' && <LoadingState />}
+          {status.kind === 'error' && (
+            <div className="fade-up flex items-start gap-2.5 rounded-2xl border border-bull/20 bg-bull-soft px-5 py-4 text-sm text-bull">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>{status.message}</span>
+            </div>
+          )}
+          {status.kind === 'success' && (
+            <>
+              <ReportHeader report={status.report} cached={status.cached} className="fade-up" />
+              <SignalCards results={status.report.results} className="fade-up [animation-delay:120ms]" />
+              <VerdictCard final={status.report.final} className="fade-up [animation-delay:240ms]" />
+            </>
+          )}
+        </main>
+
+        <Footer report={status.kind === 'success' ? status.report : null} />
+      </div>
+    </div>
+  )
+}
+
+function IdleHint() {
+  const feats = [
+    ['免 key 行情', '东方财富 / 同花顺双数据源'],
+    ['多智能体', '技术面 · 基本面 · 消息面 · 风控'],
+    ['结构化结论', '信号 + 置信度 + 关键要点'],
+  ] as const
+  return (
+    <div className="fade-up grid gap-3 [animation-delay:120ms] sm:grid-cols-3">
+      {feats.map(([t, d]) => (
+        <div key={t} className="shadow-card rounded-2xl border border-line bg-white px-5 py-4">
+          <div className="text-sm font-medium">{t}</div>
+          <div className="mt-1 text-xs leading-5 text-ink-3">{d}</div>
+        </div>
+      ))}
+    </div>
+  )
+}

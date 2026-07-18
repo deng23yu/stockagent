@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@theme {
+  /* Kimi 官网风: 浅色 + 呼吸感 + 克制配色 */
+  --color-bg: #fafafb;
+  --color-ink: #18181b;
+  --color-ink-2: #52525b;
+  --color-ink-3: #a1a1aa;
+  --color-line: rgba(0, 0, 0, 0.06);
+  --color-accent: #5b5bd6;
+  --color-accent-soft: #eeeffd;
+  --color-bull: #e5484d;
+  --color-bull-soft: #fdecec;
+  --color-bear: #30a46c;
+  --color-bear-soft: #e9f6ef;
+  --color-neutral: #b47818;
+  --color-neutral-soft: #fbf3e2;
+
+  --font-sans: -apple-system, "SF Pro SC", "PingFang SC", "HarmonyOS Sans SC",
+    "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -12px rgba(16, 24, 40, 0.08);
+  --shadow-pop: 0 2px 6px rgba(16, 24, 40, 0.05), 0 16px 40px -16px rgba(16, 24, 40, 0.12);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* 数字等宽: 价格/指标对齐 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 报告区块错落入场 */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.5s cubic-bezier(0.22, 0.68, 0.36, 1) both;
+}
+
+/* 加载呼吸 */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+/* 骨架屏 */
+@keyframes shimmer {
+  to { background-position-x: -200%; }
+}
+.skeleton {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.05) 25%, rgba(0, 0, 0, 0.09) 37%, rgba(0, 0, 0, 0.05) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
