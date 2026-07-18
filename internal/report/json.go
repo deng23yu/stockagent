@@ -1,6 +1,7 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 
@@ -34,4 +35,13 @@ func RenderJSON(w io.Writer, d *Data) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(jr)
+}
+
+// MarshalJSON 将报告编码为 JSON 字节 (内容与 RenderJSON 一致)，供 HTTP API 使用。
+func MarshalJSON(d *Data) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, d); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

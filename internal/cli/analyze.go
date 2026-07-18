@@ -1,22 +1,15 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
-	"github.com/deng23yu/stockagent/internal/agent"
 	"github.com/deng23yu/stockagent/internal/config"
-	"github.com/deng23yu/stockagent/internal/eastmoney"
-	"github.com/deng23yu/stockagent/internal/indicator"
-	"github.com/deng23yu/stockagent/internal/llm"
+	"github.com/deng23yu/stockagent/internal/pipeline"
 	"github.com/deng23yu/stockagent/internal/report"
-	"github.com/deng23yu/stockagent/internal/ths"
 )
 
 type analyzeOptions struct {
@@ -56,21 +49,6 @@ func newAnalyzeCmd() *cobra.Command {
 }
 
 func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
-	started := time.Now()
-	ctx := cmd.Context()
-	stderr := cmd.ErrOrStderr()
-
-	em := eastmoney.New(nil)
-	var src eastmoney.Source
-	switch opts.source {
-	case "eastmoney":
-		src = em
-	case "ths":
-		src = ths.New(nil)
-	default:
-		return fmt.Errorf("未知数据源 %q (可选: eastmoney | ths)", opts.source)
-	}
-
 	cfg, err := config.Load(cfgFile, config.Overrides{
 		BaseURL: opts.baseURL,
 		APIKey:  opts.apiKey,
@@ -79,96 +57,16 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 	if err != nil {
 		return err
 	}
-	if cfg.LLM.APIKey == "" {
-		return errors.New("未配置 LLM API Key\n请在 ./stockagent.yaml 或 ~/.stockagent.yaml 中填写 llm.api_key (参考 stockagent.yaml.example)，\n或设置环境变量 STOCKAGENT_API_KEY")
-	}
 
-	fmt.Fprintln(stderr, "==> 拉取行情与公告数据…")
-	var (
-		klineData *eastmoney.KlineData
-		snap      *eastmoney.Snapshot
-		anns      []eastmoney.Announcement
-	)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		d, err := src.KlinesByCode(gctx, code, opts.days)
-		if err != nil {
-			return fmt.Errorf("K 线数据: %w", err)
-		}
-		klineData = d
-		return nil
+	data, err := pipeline.Run(cmd.Context(), cfg, code, pipeline.Options{
+		Days:     opts.days,
+		AnnCount: opts.annCount,
+		Source:   opts.source,
+	}, func(format string, args ...any) {
+		fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
 	})
-	g.Go(func() error {
-		s, err := src.SnapshotByCode(gctx, code)
-		if err != nil {
-			return fmt.Errorf("行情快照: %w", err)
-		}
-		snap = s
-		return nil
-	})
-	g.Go(func() error {
-		// 公告始终用东方财富接口 (ths 无免费公告源，东财公告子域与行情子域限流独立);
-		// 拉取失败不阻断主流程，消息面按无数据处理。
-		a, err := em.Announcements(gctx, code, opts.annCount)
-		if err == nil {
-			anns = a
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
+	if err != nil {
 		return err
-	}
-
-	closes := make([]float64, len(klineData.Bars))
-	highs := make([]float64, len(klineData.Bars))
-	lows := make([]float64, len(klineData.Bars))
-	for i, b := range klineData.Bars {
-		closes[i], highs[i], lows[i] = b.Close, b.High, b.Low
-	}
-	summary := indicator.Summarize(closes, highs, lows)
-
-	name := klineData.Name
-	if name == "" {
-		name = snap.Name
-	}
-	bars := klineData.Bars
-	if len(bars) > 30 {
-		bars = bars[len(bars)-30:]
-	}
-	actx := &agent.Context{
-		Code:          code,
-		Name:          name,
-		Snapshot:      snap,
-		Indicators:    summary,
-		Bars:          bars,
-		Announcements: anns,
-		LLM:           llm.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Temperature),
-	}
-
-	fmt.Fprintln(stderr, "==> 4 位 AI 分析师并行分析中…")
-	agents := agent.All()
-	results := make([]agent.Result, len(agents))
-	g2, g2ctx := errgroup.WithContext(ctx)
-	for i, ag := range agents {
-		g2.Go(func() error {
-			results[i] = ag.Analyze(g2ctx, actx) // 失败体现在 Result.Err，不中断其他分析师
-			return nil
-		})
-	}
-	_ = g2.Wait()
-
-	fmt.Fprintln(stderr, "==> 组合经理汇总中…")
-	final := agent.PortfolioManager{}.Synthesize(ctx, actx, results)
-
-	data := &report.Data{
-		Code:        actx.Code,
-		Name:        actx.Name,
-		GeneratedAt: time.Now(),
-		Snapshot:    snap,
-		Results:     results,
-		Final:       final,
-		Model:       cfg.LLM.Model,
-		Elapsed:     time.Since(started).Round(time.Second),
 	}
 
 	var w io.Writer = cmd.OutOrStdout()
@@ -202,7 +100,7 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 		return err
 	}
 	if opts.output != "" {
-		fmt.Fprintf(stderr, "==> 报告已写入 %s\n", opts.output)
+		fmt.Fprintf(cmd.ErrOrStderr(), "==> 报告已写入 %s\n", opts.output)
 	}
 	return nil
 }

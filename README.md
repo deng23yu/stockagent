@@ -123,6 +123,27 @@ stockagent analyze 600519 --model deepseek-reasoner
 | `-o, --output` | stdout | 输出到文件 |
 | `--model` / `--base-url` / `--api-key` | - | 覆盖配置 |
 
+## HTTP API (服务端模式)
+
+```bash
+stockagent serve --port 8080    # 默认监听 127.0.0.1:8080
+```
+
+- `GET /api/v1/analyze?code=600519&source=ths` — 分析接口，返回与 `--format json` 一致的 JSON
+- `GET /healthz` — 健康检查
+
+特性: 结果缓存 15 分钟 (`--cache-ttl`，重复请求毫秒级返回)、并发上限 4 (超出返回 429)、CORS 全开 (前端开发友好)。
+LLM key 只存在于服务端，前端永远接触不到。
+
+```javascript
+// 前端调用
+fetch("/api/v1/analyze?code=600519&source=ths")
+  .then(r => r.json())
+  .then(report => console.log(report.final.signal, report.final.summary));
+```
+
+生产环境暴露: `--host 0.0.0.0` 并置于反向代理之后 (自行加鉴权/限流)。
+
 ## 开发
 
 ```bash

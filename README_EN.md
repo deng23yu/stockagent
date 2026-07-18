@@ -79,6 +79,27 @@ stockagent analyze 600519 --model deepseek-reasoner
 | `-o, --output` | stdout | Write to a file |
 | `--model` / `--base-url` / `--api-key` | - | Override config |
 
+## HTTP API (server mode)
+
+```bash
+stockagent serve --port 8080    # listens on 127.0.0.1:8080 by default
+```
+
+- `GET /api/v1/analyze?code=600519&source=ths` — analysis endpoint, same JSON as `--format json`
+- `GET /healthz` — health check
+
+Features: 15-minute result cache (`--cache-ttl`, repeat requests return in milliseconds),
+concurrency cap of 4 (429 beyond that), permissive CORS for local frontend development.
+The LLM key stays server-side and is never exposed to clients.
+
+```javascript
+fetch("/api/v1/analyze?code=600519&source=ths")
+  .then(r => r.json())
+  .then(report => console.log(report.final.signal, report.final.summary));
+```
+
+For production exposure use `--host 0.0.0.0` behind a reverse proxy (add your own auth/rate-limiting).
+
 ## Development
 
 ```bash

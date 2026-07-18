@@ -37,7 +37,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&cfgFile, "config", "", "配置文件路径 (默认 ./stockagent.yaml 或 ~/.stockagent.yaml)")
-	root.AddCommand(newAnalyzeCmd(), newVersionCmd())
+	root.AddCommand(newAnalyzeCmd(), newServeCmd(), newVersionCmd())
 	return root
 }
 
