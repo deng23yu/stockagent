@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 
-	"stockagent/internal/eastmoney"
-	"stockagent/internal/indicator"
-	"stockagent/internal/llm"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/indicator"
+	"github.com/deng23yu/stockagent/internal/llm"
 )
 
 // Signal 是分析结论的方向。

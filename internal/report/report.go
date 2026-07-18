@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"stockagent/internal/agent"
-	"stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
 )
 
 // Data 是渲染报告所需的全部内容。

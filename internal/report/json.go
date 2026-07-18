@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"io"
 
-	"stockagent/internal/agent"
-	"stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
 )
 
 type jsonReport struct {

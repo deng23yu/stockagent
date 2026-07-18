@@ -10,12 +10,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
-	"stockagent/internal/agent"
-	"stockagent/internal/config"
-	"stockagent/internal/eastmoney"
-	"stockagent/internal/indicator"
-	"stockagent/internal/llm"
-	"stockagent/internal/report"
+	"github.com/deng23yu/stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/config"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/indicator"
+	"github.com/deng23yu/stockagent/internal/llm"
+	"github.com/deng23yu/stockagent/internal/report"
 )
 
 type analyzeOptions struct {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
 )
 
 // buildKlineFixture 生成 120 根单调递增的日 K 线。

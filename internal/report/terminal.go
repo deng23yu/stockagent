@@ -7,7 +7,7 @@ import (
 
 	"github.com/olekukonko/tablewriter"
 
-	"stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/agent"
 )
 
 const (

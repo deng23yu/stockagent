@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"stockagent/internal/eastmoney"
-	"stockagent/internal/indicator"
-	"stockagent/internal/llm"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/indicator"
+	"github.com/deng23yu/stockagent/internal/llm"
 )
 
 func TestExtractJSON(t *testing.T) {

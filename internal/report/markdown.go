@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/agent"
 )
 
 // RenderMarkdown 渲染 Markdown 报告。

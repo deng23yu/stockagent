@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"stockagent/internal/agent"
-	"stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/agent"
+	"github.com/deng23yu/stockagent/internal/eastmoney"
 )
 
 func sampleData() *Data {

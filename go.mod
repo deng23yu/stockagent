@@ -1,4 +1,4 @@
-module stockagent
+module github.com/deng23yu/stockagent
 
 go 1.25.0
 

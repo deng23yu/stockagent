@@ -77,13 +77,13 @@ $ stockagent analyze 600519
 
 ```bash
 # 方式一: 从源码安装 (Go ≥ 1.25)
-git clone https://github.com/OWNER/stockagent.git
+git clone https://github.com/deng23yu/stockagent.git
 cd stockagent && go install .
 
 # 方式二: 下载 Release 预编译二进制 (linux / macOS / Windows)
 ```
 
-> 发布后请将 `OWNER` 替换为你的 GitHub 用户名，并把 `go.mod` 的 module 路径改为 `github.com/OWNER/stockagent`，即可支持 `go install github.com/OWNER/stockagent@latest`。
+> module 路径已配置为 `github.com/deng23yu/stockagent`，发布后可直接 `go install github.com/deng23yu/stockagent@latest`。
 
 ## 配置
 

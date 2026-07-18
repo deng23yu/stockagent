@@ -7,7 +7,7 @@ builds:
     main: .
     binary: stockagent
     ldflags:
-      - -s -w -X stockagent/internal/cli.Version={{.Version}}
+      - -s -w -X github.com/deng23yu/stockagent/internal/cli.Version={{.Version}}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 

@@ -1,6 +1,6 @@
 package main
 
-import "stockagent/internal/cli"
+import "github.com/deng23yu/stockagent/internal/cli"
 
 func main() {
 	cli.Execute()

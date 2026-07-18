@@ -36,7 +36,7 @@ Key design choices:
 
 ```bash
 # From source (Go ≥ 1.25)
-git clone https://github.com/OWNER/stockagent.git
+git clone https://github.com/deng23yu/stockagent.git
 cd stockagent && go install .
 
 # Or download a prebuilt binary from Releases (linux / macOS / Windows)
