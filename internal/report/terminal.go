@@ -53,8 +53,8 @@ func RenderTerminal(w io.Writer, d *Data, color bool) {
 	} else {
 		priceText = paint(priceText, ansiGreen, color)
 	}
-	fmt.Fprintf(w, "%s    PE %s  PB %.2f  总市值 %s\n",
-		priceText, peText(s.PE), s.PB, agent.FormatYi(s.TotalMarketCap))
+	fmt.Fprintf(w, "%s    PE %s  PB %s  总市值 %s\n",
+		priceText, peText(s.PE), pbText(s.PB), agent.FormatYi(s.TotalMarketCap))
 	fmt.Fprintln(w, paint(fmt.Sprintf("生成于 %s · 模型 %s · 耗时 %s",
 		d.GeneratedAt.Format("2006-01-02 15:04"), d.Model, d.Elapsed), ansiGray, color))
 	fmt.Fprintln(w)

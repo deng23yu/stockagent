@@ -16,6 +16,7 @@ import (
 	"github.com/deng23yu/stockagent/internal/indicator"
 	"github.com/deng23yu/stockagent/internal/llm"
 	"github.com/deng23yu/stockagent/internal/report"
+	"github.com/deng23yu/stockagent/internal/ths"
 )
 
 type analyzeOptions struct {
@@ -23,6 +24,7 @@ type analyzeOptions struct {
 	annCount int
 	format   string
 	output   string
+	source   string
 	model    string
 	baseURL  string
 	apiKey   string
@@ -34,6 +36,7 @@ func newAnalyzeCmd() *cobra.Command {
 		Use:   "analyze <股票代码>",
 		Short: "分析指定 A 股个股并生成 AI 投研报告",
 		Example: `  stockagent analyze 600519
+  stockagent analyze 300750 --source ths
   stockagent analyze 300750 --format markdown -o report.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -45,6 +48,7 @@ func newAnalyzeCmd() *cobra.Command {
 	f.IntVar(&opts.annCount, "ann", 20, "拉取的公告数量")
 	f.StringVar(&opts.format, "format", "terminal", "输出格式: terminal | markdown | json")
 	f.StringVarP(&opts.output, "output", "o", "", "写入文件 (默认输出到标准输出)")
+	f.StringVar(&opts.source, "source", "eastmoney", "行情数据源: eastmoney (东方财富) | ths (同花顺)")
 	f.StringVar(&opts.model, "model", "", "覆盖配置中的 LLM 模型")
 	f.StringVar(&opts.baseURL, "base-url", "", "覆盖配置中的 LLM Base URL")
 	f.StringVar(&opts.apiKey, "api-key", "", "覆盖配置中的 LLM API Key (也可用环境变量 STOCKAGENT_API_KEY)")
@@ -56,9 +60,15 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	secid, err := eastmoney.SecID(code)
-	if err != nil {
-		return err
+	em := eastmoney.New(nil)
+	var src eastmoney.Source
+	switch opts.source {
+	case "eastmoney":
+		src = em
+	case "ths":
+		src = ths.New(nil)
+	default:
+		return fmt.Errorf("未知数据源 %q (可选: eastmoney | ths)", opts.source)
 	}
 
 	cfg, err := config.Load(cfgFile, config.Overrides{
@@ -74,7 +84,6 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 	}
 
 	fmt.Fprintln(stderr, "==> 拉取行情与公告数据…")
-	em := eastmoney.New(nil)
 	var (
 		klineData *eastmoney.KlineData
 		snap      *eastmoney.Snapshot
@@ -82,7 +91,7 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		d, err := em.Klines(gctx, secid, opts.days)
+		d, err := src.KlinesByCode(gctx, code, opts.days)
 		if err != nil {
 			return fmt.Errorf("K 线数据: %w", err)
 		}
@@ -90,7 +99,7 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 		return nil
 	})
 	g.Go(func() error {
-		s, err := em.Snapshot(gctx, secid)
+		s, err := src.SnapshotByCode(gctx, code)
 		if err != nil {
 			return fmt.Errorf("行情快照: %w", err)
 		}
@@ -98,7 +107,8 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 		return nil
 	})
 	g.Go(func() error {
-		// 公告拉取失败不阻断主流程，消息面按无数据处理。
+		// 公告始终用东方财富接口 (ths 无免费公告源，东财公告子域与行情子域限流独立);
+		// 拉取失败不阻断主流程，消息面按无数据处理。
 		a, err := em.Announcements(gctx, code, opts.annCount)
 		if err == nil {
 			anns = a
@@ -126,7 +136,7 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 		bars = bars[len(bars)-30:]
 	}
 	actx := &agent.Context{
-		Code:          klineData.Code,
+		Code:          code,
 		Name:          name,
 		Snapshot:      snap,
 		Indicators:    summary,

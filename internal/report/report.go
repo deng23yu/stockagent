@@ -30,3 +30,11 @@ func peText(pe float64) string {
 	}
 	return fmt.Sprintf("%.2f", pe)
 }
+
+// pbText 格式化 PB; 数据源缺失 (≤0) 时显示占位符。
+func pbText(pb float64) string {
+	if pb <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f", pb)
+}

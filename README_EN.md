@@ -2,7 +2,7 @@
 
 **AI multi-agent investment research CLI for China A-shares** — one command, four AI analysts working in parallel, producing a full research report.
 
-Inspired by [ai-hedge-fund](https://github.com/virattt/ai-hedge-fund), but built for the **A-share market** (Shanghai & Shenzhen), distributed as a **single Go binary**, with **key-free market data** from Eastmoney.
+Inspired by [ai-hedge-fund](https://github.com/virattt/ai-hedge-fund), but built for the **A-share market** (Shanghai & Shenzhen), distributed as a **single Go binary**, with **key-free market data** from Eastmoney & THS (dual sources).
 
 [中文文档](README.md)
 
@@ -11,7 +11,7 @@ Inspired by [ai-hedge-fund](https://github.com/virattt/ai-hedge-fund), but built
 ## How it works
 
 ```
-Market data (Eastmoney, no API key, fetched in parallel)
+Market data (Eastmoney / THS, no API key, fetched in parallel)
         │
 Technical indicators (MA / MACD / RSI / volatility / max drawdown,
 computed locally & deterministically — the LLM only interprets)
@@ -64,6 +64,7 @@ Env vars also supported: `STOCKAGENT_BASE_URL` / `STOCKAGENT_API_KEY` / `STOCKAG
 
 ```bash
 stockagent analyze 600519                          # Kweichow Moutai
+stockagent analyze 600519 --source ths             # use THS data source
 stockagent analyze 300750 --format markdown -o report.md
 stockagent analyze 000001 --format json
 stockagent analyze 600519 --model deepseek-reasoner
@@ -73,6 +74,7 @@ stockagent analyze 600519 --model deepseek-reasoner
 | --- | --- | --- |
 | `--days` | 250 | Number of daily K-line bars |
 | `--ann` | 20 | Number of announcements |
+| `--source` | eastmoney | Market data source: `eastmoney` / `ths` (THS) |
 | `--format` | terminal | `terminal` / `markdown` / `json` |
 | `-o, --output` | stdout | Write to a file |
 | `--model` / `--base-url` / `--api-key` | - | Override config |

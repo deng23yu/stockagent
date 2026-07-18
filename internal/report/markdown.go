@@ -13,8 +13,8 @@ func RenderMarkdown(w io.Writer, d *Data) {
 	fmt.Fprintf(w, "# %s (%s) AI 投研报告\n\n", d.Name, d.Code)
 	fmt.Fprintf(w, "> 生成于 %s · 模型 `%s`\n\n", d.GeneratedAt.Format("2006-01-02 15:04"), d.Model)
 	fmt.Fprintf(w, "- 现价: **%.2f** (%+.2f%%)\n", s.Price, s.ChangePct)
-	fmt.Fprintf(w, "- PE(动态): %s | PB: %.2f | 总市值: %s\n\n",
-		peText(s.PE), s.PB, agent.FormatYi(s.TotalMarketCap))
+	fmt.Fprintf(w, "- PE(动态): %s | PB: %s | 总市值: %s\n\n",
+		peText(s.PE), pbText(s.PB), agent.FormatYi(s.TotalMarketCap))
 
 	fmt.Fprintln(w, "| 智能体 | 信号 | 置信度 |")
 	fmt.Fprintln(w, "| --- | --- | --- |")

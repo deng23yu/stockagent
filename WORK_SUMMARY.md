@@ -89,6 +89,7 @@ internal/report/            终端（红涨绿跌）/ Markdown / JSON 渲染
 ## 九、当前状态与遗留事项
 
 - ✅ 代码已上线，CI 已自动触发
+- ✅ 新增同花顺数据源 (`--source ths`): K线/快照已实测通过，东财限流时可直接切换；公告仍走东财 (该子域未被限流)
 - ⚠️ 东财 push2/push2his 子域在开发后期对本机 IP 限流（curl 同样 000，非代码问题），live 测试待限流解除后重跑
 - 📋 待办：
   1. 吊销本次使用的 PAT（GitHub → Settings → Developer settings → Tokens）

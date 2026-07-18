@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 市场 | 美股 | **A 股** (沪深) |
 | 运行时 | Python 环境 | **Go 单二进制** |
-| 行情数据 | 需 API key | **东方财富免 key** |
+| 行情数据 | 需 API key | **东财/同花顺双数据源，均免 key** |
 | 报告语言 | 英文 | **中文** |
 
 > ⚠️ **免责声明**: 本项目仅供学习与技术研究，所有输出均由 AI 生成，**不构成任何投资建议**。股市有风险，投资需谨慎。
@@ -47,7 +47,7 @@ $ stockagent analyze 600519
 ## 工作原理
 
 ```
-┌──────────────┐   K线/快照/公告 (东方财富, 免 key, 并行拉取)
+┌──────────────┐   K线/快照/公告 (东方财富/同花顺, 免 key, 并行拉取)
 │  数据层       │ ──────────────────────────────────────
 └──────────────┘
        │
@@ -107,6 +107,7 @@ llm:
 
 ```bash
 stockagent analyze 600519                          # 分析贵州茅台
+stockagent analyze 600519 --source ths             # 改用同花顺数据源
 stockagent analyze 300750                          # 分析宁德时代
 stockagent analyze 000001 --format markdown -o report.md
 stockagent analyze 600519 --format json            # 供程序消费
@@ -117,6 +118,7 @@ stockagent analyze 600519 --model deepseek-reasoner
 | --- | --- | --- |
 | `--days` | 250 | 拉取的日 K 线数量 |
 | `--ann` | 20 | 拉取的公告数量 |
+| `--source` | eastmoney | 行情数据源: `eastmoney` (东方财富) / `ths` (同花顺) |
 | `--format` | terminal | `terminal` / `markdown` / `json` |
 | `-o, --output` | stdout | 输出到文件 |
 | `--model` / `--base-url` / `--api-key` | - | 覆盖配置 |
