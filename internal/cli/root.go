@@ -4,12 +4,24 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
 
-// Version 由 goreleaser 通过 ldflags 注入。
+// Version 由 goreleaser 通过 ldflags 注入；
+// 未注入时 (如 go install @vX.Y.Z) 回退到 Go 模块版本。
 var Version = "dev"
+
+func init() {
+	if Version != "dev" {
+		return
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok &&
+		bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		Version = bi.Main.Version
+	}
+}
 
 var cfgFile string
 
