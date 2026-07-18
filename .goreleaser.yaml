@@ -1,0 +1,32 @@
+version: 2
+
+project_name: stockagent
+
+builds:
+  - id: stockagent
+    main: .
+    binary: stockagent
+    ldflags:
+      - -s -w -X stockagent/internal/cli.Version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - stockagent.yaml.example
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

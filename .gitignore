@@ -1,0 +1,12 @@
+# 编译产物
+/stockagent
+/stockagent.exe
+/dist/
+
+# 测试与覆盖率
+*.test
+*.out
+
+# 本地配置 (含 API Key, 切勿提交)
+/stockagent.yaml
+/stockagent.yml
