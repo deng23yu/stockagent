@@ -11,3 +11,5 @@ llm:
   base_url: https://api.deepseek.com
   api_key: sk-your-api-key
   model: deepseek-chat
+  # temperature: 0.3   # 可选; 不设置则由服务端默认值决定
+                         # (kimi-for-coding 等模型只接受 temperature=1 时必须留空)

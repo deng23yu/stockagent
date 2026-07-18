@@ -142,7 +142,7 @@ func runAnalyze(cmd *cobra.Command, code string, opts *analyzeOptions) error {
 		Indicators:    summary,
 		Bars:          bars,
 		Announcements: anns,
-		LLM:           llm.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model),
+		LLM:           llm.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Temperature),
 	}
 
 	fmt.Fprintln(stderr, "==> 4 位 AI 分析师并行分析中…")

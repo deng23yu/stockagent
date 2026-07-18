@@ -14,6 +14,9 @@ type LLMConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
+	// Temperature 为 nil 时不下发该字段，由服务端默认值决定
+	// (部分模型如 kimi-for-coding 只接受 temperature=1)。
+	Temperature *float64 `yaml:"temperature"`
 }
 
 // Config 是顶层配置。

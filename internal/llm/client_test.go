@@ -22,7 +22,7 @@ func TestChat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "deepseek-chat")
+	c := New(srv.URL, "sk-test", "deepseek-chat", nil)
 	out, err := c.Chat(context.Background(), "sys", "user", true)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestChatRetryOn5xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out, err := New(srv.URL, "k", "m").Chat(context.Background(), "s", "u", false)
+	out, err := New(srv.URL, "k", "m", nil).Chat(context.Background(), "s", "u", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestChatNoRetryOn4xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(srv.URL, "bad", "m").Chat(context.Background(), "s", "u", true)
+	_, err := New(srv.URL, "bad", "m", nil).Chat(context.Background(), "s", "u", true)
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("err = %v, want 包含 401", err)
 	}

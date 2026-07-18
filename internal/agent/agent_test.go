@@ -105,7 +105,7 @@ func testContext(srvURL string) *Context {
 		Announcements: []eastmoney.Announcement{
 			{Title: "贵州茅台:重大事项公告", Date: "2026-07-18"},
 		},
-		LLM: llm.New(srvURL, "k", "m"),
+		LLM: llm.New(srvURL, "k", "m", nil),
 	}
 }
 

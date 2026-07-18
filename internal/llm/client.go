@@ -18,19 +18,22 @@ import (
 
 // Client 是 LLM 客户端。
 type Client struct {
-	baseURL string
-	apiKey  string
-	model   string
-	hc      *http.Client
+	baseURL     string
+	apiKey      string
+	model       string
+	temperature *float64
+	hc          *http.Client
 }
 
 // New 创建 Client。baseURL 形如 "https://api.deepseek.com"，可带 /v1。
-func New(baseURL, apiKey, model string) *Client {
+// temperature 为 nil 时请求不携带该字段，由服务端默认值决定。
+func New(baseURL, apiKey, model string, temperature *float64) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		hc:      &http.Client{Timeout: 90 * time.Second},
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		apiKey:      apiKey,
+		model:       model,
+		temperature: temperature,
+		hc:          &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -45,7 +48,7 @@ type message struct {
 type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []message       `json:"messages"`
-	Temperature    float64         `json:"temperature"`
+	Temperature    *float64        `json:"temperature,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
@@ -67,7 +70,7 @@ type chatResponse struct {
 func (c *Client) Chat(ctx context.Context, system, user string, jsonMode bool) (string, error) {
 	reqBody := chatRequest{
 		Model:       c.model,
-		Temperature: 0.3,
+		Temperature: c.temperature,
 		Messages: []message{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
