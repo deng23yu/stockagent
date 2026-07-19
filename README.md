@@ -139,6 +139,7 @@ stockagent serve --port 8080    # 默认监听 127.0.0.1:8080
 ```
 
 - `GET /api/v1/analyze?code=600519&source=ths` — 分析接口，返回与 `--format json` 一致的 JSON
+- `GET /api/v1/access-log?limit=50` — 最近访问记录 (IP/股票代码/数据源/缓存命中/状态/耗时)，同时写入 JSONL 文件 (`--access-log`，默认 `access-log.jsonl`)
 - `GET /healthz` — 健康检查
 
 特性: 结果缓存 15 分钟 (`--cache-ttl`，重复请求毫秒级返回)、并发上限 4 (超出返回 429)、CORS 全开 (前端开发友好)。

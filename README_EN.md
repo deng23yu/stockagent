@@ -95,6 +95,7 @@ stockagent serve --port 8080    # listens on 127.0.0.1:8080 by default
 ```
 
 - `GET /api/v1/analyze?code=600519&source=ths` — analysis endpoint, same JSON as `--format json`
+- `GET /api/v1/access-log?limit=50` — recent access records (IP/code/source/cache-hit/status/latency), also written to a JSONL file (`--access-log`, default `access-log.jsonl`)
 - `GET /healthz` — health check
 
 Features: 15-minute result cache (`--cache-ttl`, repeat requests return in milliseconds),

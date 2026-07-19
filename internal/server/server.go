@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +30,8 @@ type Server struct {
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
+
+	alog *accessLog
 }
 
 type cacheEntry struct {
@@ -34,24 +39,34 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
-// New 创建 Server。cacheTTL 为分析结果缓存时长 (单次分析耗时数十秒，缓存是必须的)。
-func New(cfg *config.Config, cacheTTL time.Duration) *Server {
+// New 创建 Server。cacheTTL 为分析结果缓存时长 (单次分析耗时数十秒，缓存是必须的)；
+// accessLogPath 为访问日志 JSONL 文件路径，为空则不落盘 (仅内存保留最近 500 条)。
+func New(cfg *config.Config, cacheTTL time.Duration, accessLogPath string) (*Server, error) {
 	if cacheTTL <= 0 {
 		cacheTTL = 15 * time.Minute
+	}
+	alog, err := newAccessLog(accessLogPath, 500)
+	if err != nil {
+		return nil, err
 	}
 	return &Server{
 		cfg:   cfg,
 		ttl:   cacheTTL,
 		sem:   make(chan struct{}, maxConcurrent),
 		cache: make(map[string]cacheEntry),
-	}
+		alog:  alog,
+	}, nil
 }
 
-// Handler 返回路由 (GET /healthz, GET /api/v1/analyze)，带 CORS 中间件。
+// Close 释放服务持有的资源 (访问日志文件句柄)。
+func (s *Server) Close() error { return s.alog.close() }
+
+// Handler 返回路由 (GET /healthz, GET /api/v1/*)，带 CORS 中间件。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/analyze", s.handleAnalyze)
+	mux.HandleFunc("GET /api/v1/access-log", s.handleAccessLog)
 	mux.Handle("GET /", staticHandler()) // Web UI (SPA), API 路由优先匹配
 	return cors(mux)
 }
@@ -74,19 +89,34 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleAnalyze 处理 GET /api/v1/analyze?code=600519&source=ths
+// handleAnalyze 处理 GET /api/v1/analyze?code=600519&source=ths，并记录访问日志。
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
+	start := time.Now()
+	rec := AccessRecord{
+		Time:      start,
+		IP:        clientIP(r),
+		Code:      r.URL.Query().Get("code"),
+		Source:    r.URL.Query().Get("source"),
+		UserAgent: r.UserAgent(),
+	}
+	rec.Status = http.StatusOK
+	defer func() {
+		rec.LatencyMs = time.Since(start).Milliseconds()
+		s.alog.add(rec)
+	}()
+
+	code := rec.Code
 	if code == "" {
-		writeError(w, http.StatusBadRequest, "缺少必填参数 code (如 ?code=600519)")
+		rec.Status = http.StatusBadRequest
+		writeError(w, rec.Status, "缺少必填参数 code (如 ?code=600519)")
 		return
 	}
-	source := r.URL.Query().Get("source")
-	key := source + ":" + code
+	key := rec.Source + ":" + code
 
 	if body, ok := s.getCache(key); ok {
+		rec.CacheHit = true
 		w.Header().Set("X-Cache", "hit")
-		writeRawJSON(w, http.StatusOK, body)
+		writeRawJSON(w, rec.Status, body)
 		return
 	}
 
@@ -95,31 +125,64 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
 	default:
-		writeError(w, http.StatusTooManyRequests, "分析服务忙，请稍后重试")
+		rec.Status = http.StatusTooManyRequests
+		writeError(w, rec.Status, "分析服务忙，请稍后重试")
 		return
 	}
 
-	data, err := pipeline.Run(r.Context(), s.cfg, code, pipeline.Options{Source: source},
+	data, err := pipeline.Run(r.Context(), s.cfg, code, pipeline.Options{Source: rec.Source},
 		func(format string, args ...any) {
 			log.Printf("[analyze %s] "+format, append([]any{code}, args...)...)
 		})
 	if err != nil {
 		var ie *pipeline.InputError
 		if errors.As(err, &ie) {
-			writeError(w, http.StatusBadRequest, ie.Error())
+			rec.Status = http.StatusBadRequest
+			writeError(w, rec.Status, ie.Error())
 			return
 		}
-		writeError(w, http.StatusBadGateway, "分析失败: "+err.Error())
+		rec.Status = http.StatusBadGateway
+		writeError(w, rec.Status, "分析失败: "+err.Error())
 		return
 	}
 
 	body, err := report.MarshalJSON(data)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		rec.Status = http.StatusInternalServerError
+		writeError(w, rec.Status, err.Error())
 		return
 	}
 	s.setCache(key, body)
-	writeRawJSON(w, http.StatusOK, body)
+	writeRawJSON(w, rec.Status, body)
+}
+
+// handleAccessLog 处理 GET /api/v1/access-log?limit=50，返回最近的访问记录 (新的在前)。
+func (s *Server) handleAccessLog(w http.ResponseWriter, r *http.Request) {
+	n := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if x, err := strconv.Atoi(v); err == nil && x > 0 {
+			n = min(x, 500)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": s.alog.recent(n)})
+}
+
+// clientIP 提取客户端 IP: 优先 X-Forwarded-For (反向代理场景)，其次 X-Real-IP，最后 RemoteAddr。
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-Ip"); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) getCache(key string) ([]byte, bool) {

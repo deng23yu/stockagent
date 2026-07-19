@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,7 +66,11 @@ func newTestServer(t *testing.T, llmURL string) *httptest.Server {
 	cfg.LLM.BaseURL = llmURL
 	cfg.LLM.APIKey = "k"
 	cfg.LLM.Model = "m"
-	ts := httptest.NewServer(New(cfg, time.Minute).Handler())
+	srv, err := New(cfg, time.Minute, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -181,4 +187,73 @@ func klineFixture(n int) string {
 	}
 	b.WriteString(`]}}`)
 	return b.String()
+}
+
+// TestAccessLog 验证访问记录: XFF 解析、缓存命中标记、查询接口、JSONL 落盘。
+func TestAccessLog(t *testing.T) {
+	llmSrv := setupMocks(t)
+	cfg := &config.Config{}
+	cfg.LLM.BaseURL = llmSrv.URL
+	cfg.LLM.APIKey = "k"
+	cfg.LLM.Model = "m"
+	logPath := filepath.Join(t.TempDir(), "access.jsonl")
+	srv, err := New(cfg, time.Minute, logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 第一次请求 (带 X-Forwarded-For) + 第二次缓存请求
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/analyze?code=600519&source=ths", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	resp2, err := http.Get(ts.URL + "/api/v1/analyze?code=600519&source=ths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	// 查询接口
+	aresp, err := http.Get(ts.URL + "/api/v1/access-log?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aresp.Body.Close()
+	var out struct {
+		Records []AccessRecord `json:"records"`
+	}
+	if err := json.NewDecoder(aresp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Records) != 2 {
+		t.Fatalf("records = %d, want 2", len(out.Records))
+	}
+	// 新的在前: 第一条应为缓存命中
+	if !out.Records[0].CacheHit {
+		t.Error("最新记录应为缓存命中")
+	}
+	first := out.Records[1]
+	if first.IP != "203.0.113.7" {
+		t.Errorf("IP = %q, want XFF 首个地址", first.IP)
+	}
+	if first.Code != "600519" || first.Source != "ths" || first.Status != 200 || first.CacheHit {
+		t.Errorf("首条记录内容异常: %+v", first)
+	}
+
+	// JSONL 落盘
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(string(data)), "\n"); len(lines) != 2 {
+		t.Errorf("JSONL 应为 2 行, 实际 %d", len(lines))
+	}
 }

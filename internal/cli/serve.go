@@ -16,12 +16,13 @@ import (
 )
 
 type serveOptions struct {
-	host     string
-	port     int
-	cacheTTL time.Duration
-	model    string
-	baseURL  string
-	apiKey   string
+	host      string
+	port      int
+	cacheTTL  time.Duration
+	accessLog string
+	model     string
+	baseURL   string
+	apiKey    string
 }
 
 func newServeCmd() *cobra.Command {
@@ -40,6 +41,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&opts.host, "host", "127.0.0.1", "监听地址 (对外暴露用 0.0.0.0)")
 	f.IntVar(&opts.port, "port", 8080, "监听端口")
 	f.DurationVar(&opts.cacheTTL, "cache-ttl", 15*time.Minute, "分析结果缓存时长 (单次分析耗时数十秒)")
+	f.StringVar(&opts.accessLog, "access-log", "access-log.jsonl", "访问日志 JSONL 文件路径 (置空则仅内存保留最近 500 条)")
 	f.StringVar(&opts.model, "model", "", "覆盖配置中的 LLM 模型")
 	f.StringVar(&opts.baseURL, "base-url", "", "覆盖配置中的 LLM Base URL")
 	f.StringVar(&opts.apiKey, "api-key", "", "覆盖配置中的 LLM API Key (也可用环境变量 STOCKAGENT_API_KEY)")
@@ -59,7 +61,11 @@ func runServe(cmd *cobra.Command, opts *serveOptions) error {
 		return errors.New("未配置 LLM API Key\n请在 ./stockagent.yaml 或 ~/.stockagent.yaml 中填写 llm.api_key (参考 stockagent.yaml.example)，\n或设置环境变量 STOCKAGENT_API_KEY")
 	}
 
-	srv := server.New(cfg, opts.cacheTTL)
+	srv, err := server.New(cfg, opts.cacheTTL, opts.accessLog)
+	if err != nil {
+		return fmt.Errorf("访问日志: %w", err)
+	}
+	defer srv.Close()
 	addr := opts.host + ":" + strconv.Itoa(opts.port)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
