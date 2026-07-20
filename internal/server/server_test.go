@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/deng23yu/stockagent/internal/config"
 	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/track"
 )
 
 var llmCalls atomic.Int32
@@ -66,7 +66,7 @@ func newTestServer(t *testing.T, llmURL string) *httptest.Server {
 	cfg.LLM.BaseURL = llmURL
 	cfg.LLM.APIKey = "k"
 	cfg.LLM.Model = "m"
-	srv, err := New(cfg, time.Minute, "")
+	srv, err := New(cfg, Options{CacheTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,15 +189,19 @@ func klineFixture(n int) string {
 	return b.String()
 }
 
-// TestAccessLog 验证访问记录: XFF 解析、缓存命中标记、查询接口、JSONL 落盘。
+// TestAccessLog 验证 analyze 访问记录: XFF 解析 (trust-proxy)、缓存命中标记、
+// 查询接口返回与旧版兼容的 JSON 结构 (数据来自访客库)。
 func TestAccessLog(t *testing.T) {
 	llmSrv := setupMocks(t)
 	cfg := &config.Config{}
 	cfg.LLM.BaseURL = llmSrv.URL
 	cfg.LLM.APIKey = "k"
 	cfg.LLM.Model = "m"
-	logPath := filepath.Join(t.TempDir(), "access.jsonl")
-	srv, err := New(cfg, time.Minute, logPath)
+	tr, err := track.Open(filepath.Join(t.TempDir(), "visits.db"), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg, Options{CacheTTL: time.Minute, Tracker: tr, TrustProxy: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,17 +225,26 @@ func TestAccessLog(t *testing.T) {
 	io.ReadAll(resp2.Body)
 	resp2.Body.Close()
 
-	// 查询接口
-	aresp, err := http.Get(ts.URL + "/api/v1/access-log?limit=10")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer aresp.Body.Close()
+	// 记录为异步落库，轮询查询接口直到两条都可见
 	var out struct {
 		Records []AccessRecord `json:"records"`
 	}
-	if err := json.NewDecoder(aresp.Body).Decode(&out); err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		aresp, err := http.Get(ts.URL + "/api/v1/access-log?limit=10")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Records = nil
+		if err := json.NewDecoder(aresp.Body).Decode(&out); err != nil {
+			aresp.Body.Close()
+			t.Fatal(err)
+		}
+		aresp.Body.Close()
+		if len(out.Records) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if len(out.Records) != 2 {
 		t.Fatalf("records = %d, want 2", len(out.Records))
@@ -246,14 +259,5 @@ func TestAccessLog(t *testing.T) {
 	}
 	if first.Code != "600519" || first.Source != "ths" || first.Status != 200 || first.CacheHit {
 		t.Errorf("首条记录内容异常: %+v", first)
-	}
-
-	// JSONL 落盘
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lines := strings.Split(strings.TrimSpace(string(data)), "\n"); len(lines) != 2 {
-		t.Errorf("JSONL 应为 2 行, 实际 %d", len(lines))
 	}
 }

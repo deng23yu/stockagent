@@ -95,12 +95,44 @@ stockagent serve --port 8080    # listens on 127.0.0.1:8080 by default
 ```
 
 - `GET /api/v1/analyze?code=600519&source=ths` — analysis endpoint, same JSON as `--format json`
-- `GET /api/v1/access-log?limit=50` — recent access records (IP/code/source/cache-hit/status/latency), also written to a JSONL file (`--access-log`, default `access-log.jsonl`)
+- `GET /api/v1/compare?codes=600519,000001` — multi-stock compare (2-4 codes analyzed in parallel, per-code errors inlined)
+- `GET /api/v1/market` — major index quotes (SSE/SZSE/ChiNext, 60s server-side cache)
+- `GET /api/v1/hot-searches?days=7` — hot searched codes (public, aggregated from the visitor DB)
+- `GET /api/v1/access-log?limit=50` — recent analyze access records (IP/code/source/cache-hit/status/latency), served from the visitor DB
+- `GET /api/v1/visits?limit=50&ip=&code=` — visitor records (time/IP/geo province+city/path/search query/status/latency/UA), requires admin token
+- `GET /api/v1/visits/stats` — visitor aggregates (today/total PV/UV, top regions, top searched codes), requires admin token
 - `GET /healthz` — health check
 
-Features: 15-minute result cache (`--cache-ttl`, repeat requests return in milliseconds),
+Features: 15-minute result cache (`--cache-ttl`, repeat requests return in milliseconds, capped at 200 entries),
 concurrency cap of 4 (429 beyond that), permissive CORS for local frontend development.
 The LLM key stays server-side and is never exposed to clients.
+
+### Visitor tracking (SQLite + IP geolocation)
+
+Every visitor request (page loads + API calls; static assets and `/healthz` are skipped) is
+batch-written to SQLite asynchronously by middleware — zero added request latency. Fields: time, IP,
+country/province/city, method, path, raw query (search content), parsed stock code and source,
+cache hit, status, latency, user agent. The Web UI has a "访客记录" entry in the header
+(with PV/UV stats and IP/code filters).
+
+Geo lookup uses the offline [ip2region](https://github.com/lionsoul2014/ip2region) database.
+Download the data file (default path `./ip2region.xdb`, override with `--ipdb`; if missing,
+geo fields stay empty and internal IPs are still marked as "内网"):
+
+```bash
+curl -L -o ip2region.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
+stockagent serve --host 0.0.0.0 --port 8080 --db visits.db --ipdb ip2region.xdb --admin-token <random>
+```
+
+Visitor-related flags:
+
+| flag | default | description |
+|---|---|---|
+| `--db` | `visits.db` | SQLite path, empty to disable tracking |
+| `--ipdb` | `ip2region.xdb` | ip2region data file path |
+| `--retention-days` | 30 | visitor record retention in days (0 = forever) |
+| `--admin-token` | empty | token for `/api/v1/visits*`; empty = no auth (**set this when publicly exposed**) |
+| `--trust-proxy` | false | take visitor IP from X-Forwarded-For/X-Real-IP, enable only behind a reverse proxy |
 
 ```javascript
 fetch("/api/v1/analyze?code=600519&source=ths")

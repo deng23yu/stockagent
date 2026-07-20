@@ -13,3 +13,7 @@
 # 本地配置 (含 API Key, 切勿提交)
 /stockagent.yaml
 /stockagent.yml
+
+# 访客记录库与 IP 归属地数据 (运行时生成/下载, 勿提交)
+/visits.db*
+/ip2region.xdb

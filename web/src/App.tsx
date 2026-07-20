@@ -1,21 +1,26 @@
 import { useCallback, useRef, useState } from 'react'
-import { AlertTriangle, Sparkles } from 'lucide-react'
-import { analyzeStock, type Report } from './lib/api'
+import { AlertTriangle, ScrollText, Sparkles } from 'lucide-react'
+import { analyzeStock, compareStocks, type CompareItem, type Report } from './lib/api'
 import SearchBar from './components/SearchBar'
+import MarketBar from './components/MarketBar'
 import LoadingState from './components/LoadingState'
 import ReportHeader from './components/ReportHeader'
 import SignalCards from './components/SignalCards'
 import VerdictCard from './components/VerdictCard'
+import CompareCards from './components/CompareCards'
+import VisitsPanel from './components/VisitsPanel'
 import Footer from './components/Footer'
 
 type Status =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'success'; report: Report; cached: boolean }
+  | { kind: 'compare'; items: CompareItem[] }
   | { kind: 'error'; message: string }
 
 export default function App() {
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const [showVisits, setShowVisits] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   const onSearch = useCallback(async (code: string, source: string) => {
@@ -26,6 +31,20 @@ export default function App() {
     try {
       const { report, cached } = await analyzeStock(code, source, ac.signal)
       setStatus({ kind: 'success', report, cached })
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      setStatus({ kind: 'error', message: (e as Error).message })
+    }
+  }, [])
+
+  const onCompare = useCallback(async (codes: string[], source: string) => {
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+    setStatus({ kind: 'loading' })
+    try {
+      const items = await compareStocks(codes, source, ac.signal)
+      setStatus({ kind: 'compare', items })
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setStatus({ kind: 'error', message: (e as Error).message })
@@ -48,8 +67,15 @@ export default function App() {
             <div className="text-[15px] font-semibold tracking-tight">stockagent</div>
             <div className="text-xs text-ink-3">A 股 AI 投研多智能体</div>
           </div>
+          <button
+            className="ml-auto flex items-center gap-1 text-xs text-ink-3 transition-colors hover:text-ink-2"
+            onClick={() => setShowVisits(true)}
+          >
+            <ScrollText size={13} />
+            访客记录
+          </button>
           <a
-            className="ml-auto text-xs text-ink-3 transition-colors hover:text-ink-2"
+            className="ml-4 text-xs text-ink-3 transition-colors hover:text-ink-2"
             href="https://github.com/deng23yu/stockagent"
             target="_blank"
             rel="noreferrer"
@@ -57,6 +83,8 @@ export default function App() {
             GitHub
           </a>
         </header>
+
+        <MarketBar />
 
         <section className="fade-up mb-8 mt-10 text-center [animation-delay:60ms]">
           <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-[44px]">
@@ -69,7 +97,7 @@ export default function App() {
           </p>
         </section>
 
-        <SearchBar onSearch={onSearch} loading={status.kind === 'loading'} />
+        <SearchBar onSearch={onSearch} onCompare={onCompare} loading={status.kind === 'loading'} />
 
         <main className="mt-10 space-y-4">
           {status.kind === 'idle' && <IdleHint />}
@@ -87,10 +115,12 @@ export default function App() {
               <VerdictCard final={status.report.final} className="fade-up [animation-delay:240ms]" />
             </>
           )}
+          {status.kind === 'compare' && <CompareCards items={status.items} />}
         </main>
 
         <Footer report={status.kind === 'success' ? status.report : null} />
       </div>
+      {showVisits && <VisitsPanel onClose={() => setShowVisits(false)} />}
     </div>
   )
 }
