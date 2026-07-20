@@ -85,6 +85,11 @@ func Run(ctx context.Context, cfg *config.Config, code string, opts Options, log
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		d, err := src.KlinesByCode(gctx, code, opts.Days)
+		if err != nil && opts.Source == "eastmoney" {
+			// 东财 K 线域名可能对机房 IP 限流/封禁，回退同花顺 K 线兜底
+			log("东财 K 线拉取失败 (%v)，回退同花顺 K 线…", err)
+			d, err = ths.New(nil).KlinesByCode(gctx, code, opts.Days)
+		}
 		if err != nil {
 			return fmt.Errorf("K 线数据: %w", err)
 		}

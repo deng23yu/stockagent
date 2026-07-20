@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,13 @@ var (
 	QuoteBaseURL = "https://push2.eastmoney.com/api/qt/stock/get"
 	AnnBaseURL   = "https://np-anotice-stock.eastmoney.com/api/security/ann"
 )
+
+// fallbackHosts 为主域名不可用时的备用域名 (延时行情，数据略有延迟但接口一致)。
+// 东财主域名偶尔会对机房 IP 做连接重置，实测延时域名不受牵连。
+var fallbackHosts = map[string]string{
+	"push2his.eastmoney.com": "push2delay.eastmoney.com",
+	"push2.eastmoney.com":    "push2delay.eastmoney.com",
+}
 
 const userAgent = "Mozilla/5.0 (X11; Linux x86_64) stockagent"
 
@@ -34,10 +42,32 @@ func New(hc *http.Client) *Client {
 	return &Client{hc: hc}
 }
 
-// get 发起 GET 请求并返回响应体，对网络错误与 5xx 重试一次。
+// get 发起 GET 请求并返回响应体，对网络错误与 5xx 重试一次；
+// 全部失败且域名存在备用时，换备用 (延时) 域名再试一次。
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
+	body, err := c.getAttempts(ctx, url, 2)
+	if err != nil {
+		if alt := swapHost(url, fallbackHosts); alt != "" {
+			return c.getAttempts(ctx, alt, 1)
+		}
+	}
+	return body, err
+}
+
+// swapHost 按表替换 URL 域名，无匹配返回空串。
+func swapHost(rawurl string, table map[string]string) string {
+	for old, newHost := range table {
+		if strings.Contains(rawurl, "://"+old+"/") {
+			return strings.Replace(rawurl, "://"+old+"/", "://"+newHost+"/", 1)
+		}
+	}
+	return ""
+}
+
+// getAttempts 发起 GET 请求，最多 attempts 次 (网络错误与 5xx 重试)。
+func (c *Client) getAttempts(ctx context.Context, url string, attempts int) ([]byte, error) {
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():

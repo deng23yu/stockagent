@@ -12,6 +12,7 @@ import (
 
 	"github.com/deng23yu/stockagent/internal/config"
 	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/ths"
 )
 
 func TestRun(t *testing.T) {
@@ -121,5 +122,61 @@ func klineFixture(n int) string {
 		fmt.Fprintf(&b, `"2026-03-%02d,%.2f,%.2f,%.2f,%.2f,1000"`, i%28+1, price-0.5, price, price+1, price-1)
 	}
 	b.WriteString(`]}}`)
+	return b.String()
+}
+
+// TestRunKlineFallbackToTHS 验证东财 K 线失败时自动回退同花顺 K 线。
+func TestRunKlineFallbackToTHS(t *testing.T) {
+	setupMocks(t)
+
+	// 东财 K 线改为直接断开的死服务
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("不支持 hijack")
+		}
+		conn, _, _ := hj.Hijack()
+		conn.Close()
+	}))
+	t.Cleanup(dead.Close)
+	oldKline := eastmoney.KlineBaseURL
+	eastmoney.KlineBaseURL = dead.URL + "/kline"
+	t.Cleanup(func() { eastmoney.KlineBaseURL = oldKline })
+
+	// ths K 线 mock (JSONP 包装, data 为分号分隔记录)
+	thsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `cb({"data":"`+thsKlineRecords(120)+`"})`)
+	}))
+	t.Cleanup(thsSrv.Close)
+	oldThs := ths.KlineBaseURL
+	ths.KlineBaseURL = thsSrv.URL
+	t.Cleanup(func() { ths.KlineBaseURL = oldThs })
+
+	cfg := &config.Config{}
+	cfg.LLM.BaseURL = mockLLMURL
+	cfg.LLM.APIKey = "k"
+	cfg.LLM.Model = "m"
+
+	data, err := Run(context.Background(), cfg, "600519", Options{Days: 120}, nil)
+	if err != nil {
+		t.Fatalf("应通过 ths 回退成功: %v", err)
+	}
+	if data.Name != "贵州茅台" { // ths K 线无名称, 应回退快照名
+		t.Errorf("名称 = %q, want 贵州茅台 (来自快照)", data.Name)
+	}
+}
+
+// thsKlineRecords 生成 n 根 ths 格式的日 K 记录 (date,open,high,low,close,volume,...)。
+func thsKlineRecords(n int) string {
+	var b strings.Builder
+	price := 1000.0
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		price++
+		fmt.Fprintf(&b, `202603%02d,%.2f,%.2f,%.2f,%.2f,5841730,7322732700.00,0.467,,,`,
+			i%28+1, price-0.5, price, price-1, price)
+	}
 	return b.String()
 }

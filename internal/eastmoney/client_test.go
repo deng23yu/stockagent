@@ -2,8 +2,10 @@ package eastmoney
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +120,49 @@ func TestAnnouncements(t *testing.T) {
 	}
 	if anns[0].Title != "贵州茅台:贵州茅台重大事项公告" || anns[0].Date != "2026-07-18" {
 		t.Errorf("公告解析错误: %+v", anns[0])
+	}
+}
+
+// TestGetFallbackHost 验证主域名失败时自动切换备用 (延时) 域名。
+func TestGetFallbackHost(t *testing.T) {
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("不支持 hijack")
+		}
+		conn, _, _ := hj.Hijack() // 直接断开，模拟连接被重置
+		conn.Close()
+	}))
+	defer deadSrv.Close()
+	aliveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "ok-from-delay")
+	}))
+	defer aliveSrv.Close()
+
+	// 临时把备用表指向测试服务器
+	old := fallbackHosts
+	fallbackHosts = map[string]string{
+		strings.TrimPrefix(deadSrv.URL, "http://"): strings.TrimPrefix(aliveSrv.URL, "http://"),
+	}
+	defer func() { fallbackHosts = old }()
+
+	c := New(nil)
+	body, err := c.get(context.Background(), deadSrv.URL+"/api/qt/stock/get")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ok-from-delay" {
+		t.Errorf("应来自备用域名, got %q", body)
+	}
+}
+
+func TestSwapHost(t *testing.T) {
+	got := swapHost("https://push2.eastmoney.com/api/qt/stock/get?secid=0.000001", fallbackHosts)
+	want := "https://push2delay.eastmoney.com/api/qt/stock/get?secid=0.000001"
+	if got != want {
+		t.Errorf("swapHost = %q, want %q", got, want)
+	}
+	if got := swapHost("https://example.com/x", fallbackHosts); got != "" {
+		t.Errorf("无匹配应为空串, got %q", got)
 	}
 }
