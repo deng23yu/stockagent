@@ -158,6 +158,42 @@ func initSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	// AI 信号战绩 (埋点积累，供后续战绩榜)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS signals (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		time       TEXT NOT NULL,
+		code       TEXT NOT NULL,
+		name       TEXT NOT NULL DEFAULT '',
+		signal     TEXT NOT NULL,
+		confidence INTEGER NOT NULL DEFAULT 0,
+		price      REAL NOT NULL DEFAULT 0
+	)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_signals_code ON signals(code)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS daily_closes (
+		code  TEXT NOT NULL,
+		date  TEXT NOT NULL,
+		close REAL NOT NULL,
+		PRIMARY KEY (code, date)
+	)`); err != nil {
+		return err
+	}
+	// 主力资金流日历史 (API 只给当日，历史靠每日快照自积累)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS fund_flow (
+		code        TEXT NOT NULL,
+		date        TEXT NOT NULL,
+		main        REAL NOT NULL DEFAULT 0,
+		super_large REAL NOT NULL DEFAULT 0,
+		large       REAL NOT NULL DEFAULT 0,
+		medium      REAL NOT NULL DEFAULT 0,
+		small       REAL NOT NULL DEFAULT 0,
+		PRIMARY KEY (code, date)
+	)`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -352,6 +388,188 @@ func (t *Tracker) QueryHotCodes(days, limit int) ([]NameCount, error) {
 			return nil, err
 		}
 		out = append(out, nc)
+	}
+	return out, rows.Err()
+}
+
+// Activity 是一条可公开的访客动态 (已脱敏: 仅城市级归属地与行为)。
+type Activity struct {
+	Time   time.Time `json:"time"`
+	City   string    `json:"city"`
+	Action string    `json:"action"` // analyze | compare
+	Codes  []string  `json:"codes"`
+}
+
+// QueryRecentActivity 返回最近的访客动态 (新的在前)。
+// 取 code 非空的记录；compare 同批展开的记录按 (ip, raw_query) 合并为一条多码动态；
+// 内网记录 (多为站主自测) 不进入公开动态。
+func (t *Tracker) QueryRecentActivity(limit int) ([]Activity, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 15
+	}
+	rows, err := t.db.Query(
+		`SELECT time, ip, path, raw_query, code, country, province FROM visits
+		 WHERE code != '' AND country != '内网' ORDER BY id DESC LIMIT ?`, limit*4)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Activity{}
+	mergedAt := make(map[string]int) // compare 合并键 -> out 下标
+	for rows.Next() && len(out) < limit {
+		var ts, ip, path, rawQuery, code, country, province string
+		if err := rows.Scan(&ts, &ip, &path, &rawQuery, &code, &country, &province); err != nil {
+			return nil, err
+		}
+		when, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			continue
+		}
+		city := province
+		if city == "" {
+			city = country
+		}
+		if city == "" {
+			city = "未知"
+		}
+		action := "analyze"
+		mergeKey := ""
+		if path == "/api/v1/compare" {
+			action = "compare"
+			mergeKey = ip + "|" + rawQuery
+		}
+		if mergeKey != "" {
+			if i, ok := mergedAt[mergeKey]; ok {
+				out[i].Codes = append(out[i].Codes, code)
+				continue
+			}
+			mergedAt[mergeKey] = len(out)
+		}
+		out = append(out, Activity{Time: when, City: city, Action: action, Codes: []string{code}})
+	}
+	return out, rows.Err()
+}
+
+// Signal 是一次 AI 分析的信号事件 (战绩追踪埋点)。
+type Signal struct {
+	ID         int64     `json:"id"`
+	Time       time.Time `json:"time"`
+	Code       string    `json:"code"`
+	Name       string    `json:"name"`
+	Signal     string    `json:"signal"`
+	Confidence int       `json:"confidence"`
+	Price      float64   `json:"price"`
+}
+
+// RecordSignal 记录一次信号事件。database/sql 单连接串行化，可并发调用。
+func (t *Tracker) RecordSignal(s Signal) error {
+	_, err := t.db.Exec(
+		`INSERT INTO signals (time, code, name, signal, confidence, price) VALUES (?,?,?,?,?,?)`,
+		s.Time.Format(time.RFC3339), s.Code, s.Name, s.Signal, s.Confidence, s.Price)
+	return err
+}
+
+// RecentSignals 返回最近的信号事件 (新的在前)，供战绩统计与测试。
+func (t *Tracker) RecentSignals(limit int) ([]Signal, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := t.db.Query(
+		`SELECT id, time, code, name, signal, confidence, price FROM signals ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Signal{}
+	for rows.Next() {
+		var s Signal
+		var ts string
+		if err := rows.Scan(&s.ID, &ts, &s.Code, &s.Name, &s.Signal, &s.Confidence, &s.Price); err != nil {
+			return nil, err
+		}
+		if s.Time, err = time.Parse(time.RFC3339, ts); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// RecentSignalCodes 返回近 days 天内有信号的代码 (去重)。
+func (t *Tracker) RecentSignalCodes(days int) ([]string, error) {
+	if days <= 0 {
+		days = 45
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
+	rows, err := t.db.Query(`SELECT DISTINCT code FROM signals WHERE time >= ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpsertDailyClose 写入某日收盘价 (已存在则忽略)。
+func (t *Tracker) UpsertDailyClose(code, date string, close float64) error {
+	_, err := t.db.Exec(`INSERT OR IGNORE INTO daily_closes (code, date, close) VALUES (?,?,?)`,
+		code, date, close)
+	return err
+}
+
+// FlowRecord 是某日资金流向五档 (元)。
+type FlowRecord struct {
+	Date       string
+	Main       float64
+	SuperLarge float64
+	Large      float64
+	Medium     float64
+	Small      float64
+}
+
+// UpsertFundFlow 写入某日资金流向 (已存在则覆盖，允许当日盘中刷新)。
+func (t *Tracker) UpsertFundFlow(code string, f FlowRecord) error {
+	_, err := t.db.Exec(
+		`INSERT INTO fund_flow (code, date, main, super_large, large, medium, small)
+		 VALUES (?,?,?,?,?,?,?)
+		 ON CONFLICT(code, date) DO UPDATE SET
+		 main=excluded.main, super_large=excluded.super_large, large=excluded.large,
+		 medium=excluded.medium, small=excluded.small`,
+		code, f.Date, f.Main, f.SuperLarge, f.Large, f.Medium, f.Small)
+	return err
+}
+
+// FundFlowHistory 返回某代码最近 days 天的资金流向 (按日期升序)。
+func (t *Tracker) FundFlowHistory(code string, days int) ([]FlowRecord, error) {
+	if days <= 0 {
+		days = 5
+	}
+	rows, err := t.db.Query(
+		`SELECT date, main, super_large, large, medium, small FROM fund_flow
+		 WHERE code = ? ORDER BY date DESC LIMIT ?`, code, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []FlowRecord{}
+	for rows.Next() {
+		var f FlowRecord
+		if err := rows.Scan(&f.Date, &f.Main, &f.SuperLarge, &f.Large, &f.Medium, &f.Small); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	// DESC 取最近 N 条后翻转为升序
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, rows.Err()
 }

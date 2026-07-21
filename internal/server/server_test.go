@@ -205,6 +205,7 @@ func TestAccessLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

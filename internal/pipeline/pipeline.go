@@ -48,9 +48,8 @@ func inputErrorf(format string, args ...any) *InputError {
 	return &InputError{Msg: fmt.Sprintf(format, args...)}
 }
 
-// Run 执行完整分析流程并返回报告数据。logf 为 nil 时不输出进度日志。
-func Run(ctx context.Context, cfg *config.Config, code string, opts Options, logf func(string, ...any)) (*report.Data, error) {
-	started := time.Now()
+// PrepareContext 拉取行情与公告并计算指标，组装分析上下文 (analyze 与 debate 共用)。
+func PrepareContext(ctx context.Context, cfg *config.Config, code string, opts Options, logf func(string, ...any)) (*agent.Context, error) {
 	opts.defaults()
 	log := func(format string, args ...any) {
 		if logf != nil {
@@ -133,7 +132,7 @@ func Run(ctx context.Context, cfg *config.Config, code string, opts Options, log
 	if len(bars) > 30 {
 		bars = bars[len(bars)-30:]
 	}
-	actx := &agent.Context{
+	return &agent.Context{
 		Code:          code,
 		Name:          name,
 		Snapshot:      snap,
@@ -141,6 +140,20 @@ func Run(ctx context.Context, cfg *config.Config, code string, opts Options, log
 		Bars:          bars,
 		Announcements: anns,
 		LLM:           llm.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Temperature),
+	}, nil
+}
+
+// Run 执行完整分析流程并返回报告数据。logf 为 nil 时不输出进度日志。
+func Run(ctx context.Context, cfg *config.Config, code string, opts Options, logf func(string, ...any)) (*report.Data, error) {
+	started := time.Now()
+	log := func(format string, args ...any) {
+		if logf != nil {
+			logf(format, args...)
+		}
+	}
+	actx, err := PrepareContext(ctx, cfg, code, opts, logf)
+	if err != nil {
+		return nil, err
 	}
 
 	log("==> 4 位 AI 分析师并行分析中…")
@@ -162,7 +175,7 @@ func Run(ctx context.Context, cfg *config.Config, code string, opts Options, log
 		Code:        actx.Code,
 		Name:        actx.Name,
 		GeneratedAt: time.Now(),
-		Snapshot:    snap,
+		Snapshot:    actx.Snapshot,
 		Results:     results,
 		Final:       final,
 		Model:       cfg.LLM.Model,

@@ -180,3 +180,107 @@ export async function compareStocks(
   }
   return (body?.items ?? []) as CompareItem[]
 }
+
+// 与后端 track.Activity 对齐 (已脱敏)。
+export interface Activity {
+  time: string
+  city: string
+  action: 'analyze' | 'compare'
+  codes: string[]
+}
+
+export async function fetchActivity(limit = 15, signal?: AbortSignal): Promise<Activity[]> {
+  const resp = await fetch(`/api/v1/activity?limit=${limit}`, { signal })
+  const body = await resp.json().catch(() => null)
+  if (!resp.ok) throw new Error(body?.error ?? `请求失败 (HTTP ${resp.status})`)
+  return (body?.items ?? []) as Activity[]
+}
+
+// 与后端 debate.Debate 对齐。
+export interface DebateTurn {
+  role: 'bull' | 'bear'
+  round: number
+  content: string
+}
+
+export interface Debate {
+  code: string
+  name: string
+  turns: DebateTurn[]
+  verdict: {
+    winner: 'bull' | 'bear' | 'draw'
+    bull_score: number
+    bear_score: number
+    reasoning: string
+  }
+  model: string
+  generated_at: string
+}
+
+export async function fetchDebate(code: string, source: string, signal?: AbortSignal): Promise<Debate> {
+  const resp = await fetch(
+    `/api/v1/debate?code=${encodeURIComponent(code)}&source=${encodeURIComponent(source)}`,
+    { signal },
+  )
+  const body = await resp.json().catch(() => null)
+  if (!resp.ok) {
+    throw new Error(body?.error ?? `请求失败 (HTTP ${resp.status})`)
+  }
+  return body as Debate
+}
+
+// 与后端 news.Item 对齐。
+export interface NewsItem {
+  id: number
+  time: string
+  title: string
+  content: string
+}
+
+export async function fetchNews(signal?: AbortSignal): Promise<{ updated_at: string; items: NewsItem[] }> {
+  const resp = await fetch('/api/v1/news', { signal })
+  const body = await resp.json().catch(() => null)
+  if (!resp.ok) throw new Error(body?.error ?? `请求失败 (HTTP ${resp.status})`)
+  return body
+}
+
+// 与后端 eastmoney 资金面板结构对齐。
+export interface MarginData {
+  date: string
+  rzye: number
+  rqye: number
+  rzrqye: number
+  rzmre: number
+  rzyezb: number
+  rzmre5d: number
+}
+
+export interface FundFlowDay {
+  date: string
+  main: number
+  super_large: number
+  large: number
+  medium: number
+  small: number
+}
+
+export interface NorthboundHold {
+  date: string
+  shares: number
+  market_cap: number
+  shares_ratio: number
+}
+
+export interface CapitalData {
+  code: string
+  margin: MarginData | null
+  fund_flow: FundFlowDay[] | null
+  northbound: NorthboundHold | null
+}
+
+export async function fetchCapital(code: string, signal?: AbortSignal): Promise<CapitalData> {
+  const resp = await fetch(`/api/v1/capital?code=${encodeURIComponent(code)}`, { signal })
+  const body = await resp.json().catch(() => null)
+  if (!resp.ok) throw new Error(body?.error ?? `请求失败 (HTTP ${resp.status})`)
+  return body as CapitalData
+}

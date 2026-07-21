@@ -224,3 +224,105 @@ func TestOpenEmptyPathDisabled(t *testing.T) {
 		t.Fatalf("空 dbPath 应返回 (nil, nil): %v %v", tr, err)
 	}
 }
+
+func TestSignalsAndDailyCloses(t *testing.T) {
+	tr, err := Open(filepath.Join(t.TempDir(), "visits.db"), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	now := time.Now()
+	tr.RecordSignal(Signal{Time: now.AddDate(0, 0, -60), Code: "601318", Name: "中国平安", Signal: "bearish", Confidence: 61, Price: 50})
+	tr.RecordSignal(Signal{Time: now.Add(-time.Hour), Code: "000001", Name: "平安银行", Signal: "neutral", Confidence: 55, Price: 10.98})
+	tr.RecordSignal(Signal{Time: now, Code: "600519", Name: "贵州茅台", Signal: "bullish", Confidence: 70, Price: 1253})
+
+	sigs, err := tr.RecentSignals(10)
+	if err != nil || len(sigs) != 3 {
+		t.Fatalf("RecentSignals = %v %v", sigs, err)
+	}
+	if sigs[0].Code != "600519" || sigs[0].Signal != "bullish" || sigs[0].Price != 1253 {
+		t.Errorf("最新信号异常: %+v", sigs[0])
+	}
+
+	codes, err := tr.RecentSignalCodes(45)
+	if err != nil || len(codes) != 2 {
+		t.Fatalf("RecentSignalCodes = %v %v (60 天前的应排除)", codes, err)
+	}
+
+	// UpsertDailyClose 幂等 (重复日期忽略)
+	tr.UpsertDailyClose("600519", "2026-07-20", 1253.0)
+	tr.UpsertDailyClose("600519", "2026-07-20", 9999.0)
+	var close float64
+	if err := tr.db.QueryRow(`SELECT close FROM daily_closes WHERE code='600519' AND date='2026-07-20'`).Scan(&close); err != nil {
+		t.Fatal(err)
+	}
+	if close != 1253.0 {
+		t.Errorf("重复写入应被忽略, close = %v", close)
+	}
+}
+
+func TestQueryRecentActivity(t *testing.T) {
+	tr, err := Open(filepath.Join(t.TempDir(), "visits.db"), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	now := time.Now()
+	// analyze ×1 (公网 IP)
+	tr.Record(Visit{Time: now, IP: "203.0.113.1", Method: "GET", Path: "/api/v1/analyze", Code: "600519", Status: 200})
+	// compare 同批两行 (同 IP 同 query)
+	for _, c := range []string{"600519", "000001"} {
+		tr.Record(Visit{Time: now, IP: "203.0.113.2", Method: "GET", Path: "/api/v1/compare",
+			Query: "codes=600519,000001", Code: c, Status: 200})
+	}
+	// 内网 (应排除)
+	tr.Record(Visit{Time: now, IP: "10.0.0.1", Method: "GET", Path: "/api/v1/analyze", Code: "601318", Status: 200})
+	waitRows(t, tr, 4)
+
+	acts, err := tr.QueryRecentActivity(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acts) != 2 {
+		t.Fatalf("活动 = %d, want 2 (compare 合并, 内网排除): %+v", len(acts), acts)
+	}
+	if acts[0].Action != "compare" || len(acts[0].Codes) != 2 {
+		t.Errorf("首条应为合并的对比: %+v", acts[0])
+	}
+	if acts[1].Action != "analyze" || acts[1].Codes[0] != "600519" {
+		t.Errorf("次条应为单股分析: %+v", acts[1])
+	}
+	if acts[0].City != "未知" { // 无 xdb 时公网 IP 归属地降级为 "未知"
+		t.Errorf("无 xdb 时城市应为 未知: %q", acts[0].City)
+	}
+}
+
+func TestFundFlowHistory(t *testing.T) {
+	tr, err := Open(filepath.Join(t.TempDir(), "visits.db"), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	tr.UpsertFundFlow("600519", FlowRecord{Date: "2026-07-19", Main: 1e8})
+	tr.UpsertFundFlow("600519", FlowRecord{Date: "2026-07-21", Main: -2e8})
+	tr.UpsertFundFlow("600519", FlowRecord{Date: "2026-07-20", Main: 3e8})
+	tr.UpsertFundFlow("600519", FlowRecord{Date: "2026-07-21", Main: -5e8}) // 同日覆盖
+	tr.UpsertFundFlow("000001", FlowRecord{Date: "2026-07-21", Main: 1})
+
+	hist, err := tr.FundFlowHistory("600519", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 3 {
+		t.Fatalf("hist = %d, want 3 (同日覆盖去重)", len(hist))
+	}
+	if hist[0].Date != "2026-07-19" || hist[2].Date != "2026-07-21" {
+		t.Errorf("应按日期升序: %+v", hist)
+	}
+	if hist[2].Main != -5e8 {
+		t.Errorf("同日应覆盖为最新值: %+v", hist[2])
+	}
+}

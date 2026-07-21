@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/deng23yu/stockagent/internal/config"
+	"github.com/deng23yu/stockagent/internal/debate"
 	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/news"
 	"github.com/deng23yu/stockagent/internal/pipeline"
 	"github.com/deng23yu/stockagent/internal/report"
 	"github.com/deng23yu/stockagent/internal/tencent"
@@ -58,10 +61,47 @@ type Server struct {
 	em         *eastmoney.Client
 	adminToken string
 	trustProxy bool
+	stopCh     chan struct{} // 后台任务 (收盘快照) 停止信号
 
-	mktMu   sync.Mutex // 指数行情 60s 缓存
-	mktBody []byte
-	mktAt   time.Time
+	mkt   jsonCache // 指数行情缓存 (60s)
+	newsC jsonCache // 宏观快讯缓存 (5min)
+
+	capMu    sync.Mutex // 个股资金面板缓存 (120s)
+	capCache map[string]capEntry
+}
+
+// jsonCache 是带 TTL 的 JSON 响应缓存。
+type jsonCache struct {
+	mu   sync.Mutex
+	body []byte
+	at   time.Time
+}
+
+func (c *jsonCache) get(ttl time.Duration) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.body) > 0 && time.Since(c.at) < ttl {
+		return c.body, true
+	}
+	return nil, false
+}
+
+// stale 返回过期内容 (上游故障时降级用)。
+func (c *jsonCache) stale() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body
+}
+
+func (c *jsonCache) put(body []byte) {
+	c.mu.Lock()
+	c.body, c.at = body, time.Now()
+	c.mu.Unlock()
+}
+
+type capEntry struct {
+	body []byte
+	at   time.Time
 }
 
 type cacheEntry struct {
@@ -75,7 +115,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if opts.CacheTTL <= 0 {
 		opts.CacheTTL = 15 * time.Minute
 	}
-	return &Server{
+	s := &Server{
 		cfg:        cfg,
 		ttl:        opts.CacheTTL,
 		sem:        make(chan struct{}, maxConcurrent),
@@ -84,11 +124,18 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		em:         eastmoney.New(nil),
 		adminToken: opts.AdminToken,
 		trustProxy: opts.TrustProxy,
-	}, nil
+		stopCh:     make(chan struct{}),
+		capCache:   make(map[string]capEntry),
+	}
+	if s.tr != nil {
+		go s.snapshotLoop() // 信号战绩: 每日收盘快照
+	}
+	return s, nil
 }
 
-// Close 释放服务持有的资源 (访客记录库)。
+// Close 释放服务持有的资源 (访客记录库、后台任务)。
 func (s *Server) Close() error {
+	close(s.stopCh)
 	if s.tr != nil {
 		return s.tr.Close()
 	}
@@ -100,9 +147,13 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/analyze", s.handleAnalyze)
+	mux.HandleFunc("GET /api/v1/debate", s.handleDebate)
 	mux.HandleFunc("GET /api/v1/compare", s.handleCompare)
 	mux.HandleFunc("GET /api/v1/market", s.handleMarket)
+	mux.HandleFunc("GET /api/v1/news", s.handleNews)
+	mux.HandleFunc("GET /api/v1/capital", s.handleCapital)
 	mux.HandleFunc("GET /api/v1/hot-searches", s.handleHotSearches)
+	mux.HandleFunc("GET /api/v1/activity", s.handleActivity)
 	mux.HandleFunc("GET /api/v1/access-log", s.handleAccessLog)
 	mux.HandleFunc("GET /api/v1/visits", s.requireAdmin(s.handleVisits))
 	mux.HandleFunc("GET /api/v1/visits/stats", s.requireAdmin(s.handleVisitsStats))
@@ -267,7 +318,67 @@ func (s *Server) analyzeStock(ctx context.Context, code, source string) ([]byte,
 		return nil, false, http.StatusInternalServerError, err
 	}
 	s.setCache(key, body)
+	if s.tr != nil {
+		// AI 信号战绩埋点 (异步，不阻塞响应; 仅缓存未命中的真实分析)
+		go s.tr.RecordSignal(track.Signal{
+			Time: time.Now(), Code: data.Code, Name: data.Name,
+			Signal: string(data.Final.Signal), Confidence: data.Final.Confidence,
+			Price: data.Snapshot.Price,
+		})
+	}
 	return body, false, http.StatusOK, nil
+}
+
+// handleDebate 处理 GET /api/v1/debate?code=600519&source=ths，多空辩论赛。
+// 与 analyze 共享并发上限；结果缓存 key 前缀 debate:。
+func (s *Server) handleDebate(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "缺少必填参数 code (如 ?code=600519)")
+		return
+	}
+	key := "debate:" + r.URL.Query().Get("source") + ":" + code
+	if body, ok := s.getCache(key); ok {
+		w.Header().Set("X-Cache", "hit")
+		writeRawJSON(w, http.StatusOK, body)
+		return
+	}
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "分析服务忙，请稍后重试")
+		return
+	}
+
+	actx, err := pipeline.PrepareContext(r.Context(), s.cfg, code,
+		pipeline.Options{Source: r.URL.Query().Get("source")},
+		func(format string, args ...any) {
+			log.Printf("[debate %s] "+format, append([]any{code}, args...)...)
+		})
+	if err != nil {
+		var ie *pipeline.InputError
+		if errors.As(err, &ie) {
+			writeError(w, http.StatusBadRequest, ie.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "辩论准备失败: "+err.Error())
+		return
+	}
+
+	d, err := debate.Run(r.Context(), actx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "辩论失败: "+err.Error())
+		return
+	}
+	body, err := json.Marshal(d)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCache(key, body)
+	writeRawJSON(w, http.StatusOK, body)
 }
 
 // compareItem 是多股对比中单只股票的结果 (成功含报告，失败含错误)。
@@ -341,22 +452,16 @@ func isStockCode(s string) bool {
 
 // handleMarket 处理 GET /api/v1/market，返回主要指数行情 (内存缓存 60s)。
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
-	s.mktMu.Lock()
-	if len(s.mktBody) > 0 && time.Since(s.mktAt) < time.Minute {
-		body := s.mktBody
-		s.mktMu.Unlock()
+	if body, ok := s.mkt.get(time.Minute); ok {
 		writeRawJSON(w, http.StatusOK, body)
 		return
 	}
-	s.mktMu.Unlock()
 
 	quotes, err := s.indexQuotes(r.Context())
 	if err != nil {
 		// 上游故障时降级返回陈旧缓存
-		s.mktMu.Lock()
-		defer s.mktMu.Unlock()
-		if len(s.mktBody) > 0 {
-			writeRawJSON(w, http.StatusOK, s.mktBody)
+		if stale := s.mkt.stale(); stale != nil {
+			writeRawJSON(w, http.StatusOK, stale)
 			return
 		}
 		writeError(w, http.StatusBadGateway, "指数行情拉取失败: "+err.Error())
@@ -370,10 +475,138 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.mktMu.Lock()
-	s.mktBody, s.mktAt = body, time.Now()
-	s.mktMu.Unlock()
+	s.mkt.put(body)
 	writeRawJSON(w, http.StatusOK, body)
+}
+
+// handleNews 处理 GET /api/v1/news，返回宏观财经快讯 (缓存 5 分钟)。
+func (s *Server) handleNews(w http.ResponseWriter, r *http.Request) {
+	if body, ok := s.newsC.get(5 * time.Minute); ok {
+		writeRawJSON(w, http.StatusOK, body)
+		return
+	}
+
+	items, err := news.Latest(r.Context(), 30)
+	if err != nil {
+		if stale := s.newsC.stale(); stale != nil {
+			writeRawJSON(w, http.StatusOK, stale)
+			return
+		}
+		writeError(w, http.StatusBadGateway, "快讯拉取失败: "+err.Error())
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"updated_at": time.Now().Format(time.RFC3339),
+		"items":      items,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.newsC.put(body)
+	writeRawJSON(w, http.StatusOK, body)
+}
+
+// handleCapital 处理 GET /api/v1/capital?code=600519，
+// 返回个股资金面板: 两融 / 近 5 日资金流 / 沪深港通持股 (单项失败降级为 null，缓存 120s)。
+func (s *Server) handleCapital(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if !isStockCode(code) {
+		writeError(w, http.StatusBadRequest, "股票代码应为 6 位数字 (如 ?code=600519)")
+		return
+	}
+	s.capMu.Lock()
+	if e, ok := s.capCache[code]; ok && time.Since(e.at) < 2*time.Minute {
+		body := e.body
+		s.capMu.Unlock()
+		writeRawJSON(w, http.StatusOK, body)
+		return
+	}
+	s.capMu.Unlock()
+
+	var (
+		margin *eastmoney.MarginData
+		flows  []eastmoney.FundFlowDay
+		north  *eastmoney.NorthboundHold
+	)
+	g, gctx := errgroup.WithContext(r.Context())
+	g.Go(func() error {
+		if m, err := s.em.Margin(gctx, code); err == nil {
+			margin = m
+		}
+		return nil
+	})
+	g.Go(func() error {
+		secid, err := eastmoney.SecID(code)
+		if err != nil {
+			return nil
+		}
+		if f, err := s.em.FundFlow(gctx, secid, 5); err == nil {
+			flows = f
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if h, err := s.em.Northbound(gctx, code); err == nil {
+			north = h
+		}
+		return nil
+	})
+	_ = g.Wait()
+
+	if margin == nil && flows == nil && north == nil {
+		writeError(w, http.StatusBadGateway, "资金数据暂不可用")
+		return
+	}
+	// 当日资金落入库并合并历史 (上游仅提供当日, 趋势靠每日快照自积累)
+	if len(flows) > 0 && s.tr != nil {
+		f := flows[len(flows)-1]
+		_ = s.tr.UpsertFundFlow(code, track.FlowRecord{
+			Date: f.Date, Main: f.Main, SuperLarge: f.SuperLarge,
+			Large: f.Large, Medium: f.Medium, Small: f.Small,
+		})
+		if hist, err := s.tr.FundFlowHistory(code, 4); err == nil {
+			flows = mergeFlow(hist, flows)
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"code":       code,
+		"margin":     margin,
+		"fund_flow":  flows,
+		"northbound": north,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.capMu.Lock()
+	s.capCache[code] = capEntry{body: body, at: time.Now()}
+	s.capMu.Unlock()
+	writeRawJSON(w, http.StatusOK, body)
+}
+
+// mergeFlow 合并库内历史与 API 当日资金流 (同日以 API 为准)，升序。
+func mergeFlow(hist []track.FlowRecord, today []eastmoney.FundFlowDay) []eastmoney.FundFlowDay {
+	byDate := make(map[string]eastmoney.FundFlowDay, len(hist)+1)
+	for _, h := range hist {
+		byDate[h.Date] = eastmoney.FundFlowDay{
+			Date: h.Date, Main: h.Main, SuperLarge: h.SuperLarge,
+			Large: h.Large, Medium: h.Medium, Small: h.Small,
+		}
+	}
+	for _, f := range today {
+		byDate[f.Date] = f
+	}
+	dates := make([]string, 0, len(byDate))
+	for d := range byDate {
+		dates = append(dates, d)
+	}
+	sort.Strings(dates)
+	out := make([]eastmoney.FundFlowDay, 0, len(dates))
+	for _, d := range dates {
+		out = append(out, byDate[d])
+	}
+	return out
 }
 
 // indexQuotes 并行拉取各指数: 报价 (东财) + 近 30 日收盘价 (腾讯, best-effort)。
@@ -419,6 +652,70 @@ func indexSymbol(secid string) string {
 	return "sz" + secid[2:]
 }
 
+// stockSymbol 将 6 位股票代码映射为腾讯代码 (6 开头沪市 sh，其余深市 sz)。
+func stockSymbol(code string) string {
+	if strings.HasPrefix(code, "6") {
+		return "sh" + code
+	}
+	return "sz" + code
+}
+
+// snapshotLoop 周期性为有信号的代码记录每日收盘价 (战绩追踪)。
+func (s *Server) snapshotLoop() {
+	s.snapshotCloses() // 启动即补拍近期缺失
+	t := time.NewTicker(30 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			s.snapshotCloses()
+		}
+	}
+}
+
+// snapshotCloses 为近 45 天内有信号的代码补拍日收盘 (INSERT OR IGNORE 幂等)。
+// 当日收盘价仅在 15:35 (A 股收盘) 后记录，盘中数据不拍。
+func (s *Server) snapshotCloses() {
+	codes, err := s.tr.RecentSignalCodes(45)
+	if err != nil {
+		log.Printf("[snapshot] 查询信号代码失败: %v", err)
+		return
+	}
+	if len(codes) == 0 {
+		return
+	}
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	allowToday := now.Hour() > 15 || (now.Hour() == 15 && now.Minute() >= 35)
+	for _, code := range codes {
+		bars, err := tencent.DailyBars(context.Background(), stockSymbol(code), 5)
+		if err != nil {
+			continue
+		}
+		for _, b := range bars {
+			if b.Date > today || (b.Date == today && !allowToday) {
+				continue
+			}
+			_ = s.tr.UpsertDailyClose(code, b.Date, b.Close)
+		}
+		// 主力资金流: API 只提供当日数据，收盘后拍下入库，历史由此自积累
+		if allowToday {
+			if secid, err := eastmoney.SecID(code); err == nil {
+				if flows, err := s.em.FundFlow(context.Background(), secid, 1); err == nil {
+					for _, f := range flows {
+						_ = s.tr.UpsertFundFlow(code, track.FlowRecord{
+							Date: f.Date, Main: f.Main, SuperLarge: f.SuperLarge,
+							Large: f.Large, Medium: f.Medium, Small: f.Small,
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
 // handleHotSearches 处理 GET /api/v1/hot-searches?days=7，返回热门搜索代码 (公开)。
 func (s *Server) handleHotSearches(w http.ResponseWriter, r *http.Request) {
 	if s.tr == nil {
@@ -432,6 +729,20 @@ func (s *Server) handleHotSearches(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	items, err := s.tr.QueryHotCodes(days, 10)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleActivity 处理 GET /api/v1/activity?limit=15，返回脱敏的实时访客动态 (公开)。
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if s.tr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []track.Activity{}})
+		return
+	}
+	items, err := s.tr.QueryRecentActivity(parseLimit(r, 15))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

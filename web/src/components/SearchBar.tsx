@@ -24,27 +24,34 @@ function parseCodes(raw: string): string[] {
 export default function SearchBar({
   onSearch,
   onCompare,
+  onDebate,
+  onModeChange,
   loading,
 }: {
   onSearch: (code: string, source: string) => void
   onCompare: (codes: string[], source: string) => void
+  onDebate: (code: string, source: string) => void
+  onModeChange: () => void
   loading: boolean
 }) {
-  const [mode, setMode] = useState<'single' | 'compare'>('single')
+  const [mode, setMode] = useState<'single' | 'debate' | 'compare'>('single')
   const [code, setCode] = useState('')
   const [source, setSource] = useState<'eastmoney' | 'ths'>('ths')
 
   const codes = parseCodes(code)
   const valid =
-    mode === 'single'
-      ? /^\d{6}$/.test(code)
-      : codes.length >= 2 && codes.length <= 4 && codes.every((c) => /^\d{6}$/.test(c))
+    mode === 'compare'
+      ? codes.length >= 2 && codes.length <= 4 && codes.every((c) => /^\d{6}$/.test(c))
+      : /^\d{6}$/.test(code)
 
   const submit = () => {
     if (!valid || loading) return
     if (mode === 'single') onSearch(code, source)
+    else if (mode === 'debate') onDebate(code, source)
     else onCompare(codes, source)
   }
+
+  const buttonText = mode === 'single' ? '分析' : mode === 'debate' ? '开战' : '对比'
 
   return (
     <div className="fade-up [animation-delay:120ms]">
@@ -52,14 +59,18 @@ export default function SearchBar({
         {(
           [
             ['single', '单股分析'],
+            ['debate', '多空辩论'],
             ['compare', '多股对比'],
           ] as const
         ).map(([v, label]) => (
           <button
             key={v}
             onClick={() => {
-              setMode(v)
-              setCode('')
+              if (v !== mode) {
+                setMode(v)
+                setCode('')
+                onModeChange() // 切换模式时清掉上一模式的结果页
+              }
             }}
             className={`rounded-full px-3 py-1.5 transition ${
               mode === v ? 'bg-accent-soft font-medium text-accent' : 'text-ink-3 hover:text-ink-2'
@@ -76,13 +87,19 @@ export default function SearchBar({
           value={code}
           onChange={(e) =>
             setCode(
-              mode === 'single'
-                ? e.target.value.replace(/\D/g, '').slice(0, 6)
-                : e.target.value.replace(/[^\d,，\s]/g, '').slice(0, 32),
+              mode === 'compare'
+                ? e.target.value.replace(/[^\d,，\s]/g, '').slice(0, 32)
+                : e.target.value.replace(/\D/g, '').slice(0, 6),
             )
           }
           onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder={mode === 'single' ? '输入 6 位股票代码，如 600519' : '输入 2~4 个代码，逗号分隔，如 600519,000001'}
+          placeholder={
+            mode === 'compare'
+              ? '输入 2~4 个代码，逗号分隔，如 600519,000001'
+              : mode === 'debate'
+                ? '输入 6 位代码，看多空双方开辩'
+                : '输入 6 位股票代码，如 600519'
+          }
           inputMode="numeric"
           className="tnum h-11 w-full bg-transparent text-[15px] tracking-wide outline-none placeholder:text-ink-3"
         />
@@ -91,7 +108,7 @@ export default function SearchBar({
           disabled={!valid || loading}
           className="h-11 shrink-0 rounded-xl bg-accent px-6 text-sm font-medium text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {loading ? <Loader2 size={16} className="animate-spin" /> : mode === 'single' ? '分析' : '对比'}
+          {loading ? <Loader2 size={16} className="animate-spin" /> : buttonText}
         </button>
       </div>
 

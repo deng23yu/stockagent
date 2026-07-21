@@ -16,8 +16,14 @@ var KlineURL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 const userAgent = "Mozilla/5.0 (X11; Linux x86_64) stockagent"
 
-// DailyCloses 拉取最近 n 个交易日的日收盘价 (升序)。symbol 形如 sh000001 / sz399001。
-func DailyCloses(ctx context.Context, symbol string, n int) ([]float64, error) {
+// Bar 是一根日 K (仅日期与收盘，快照/走势图够用)。
+type Bar struct {
+	Date  string // YYYY-MM-DD
+	Close float64
+}
+
+// DailyBars 拉取最近 n 个交易日的日 K (升序)。symbol 形如 sh000001 / sz399001。
+func DailyBars(ctx context.Context, symbol string, n int) ([]Bar, error) {
 	if n <= 0 {
 		n = 30
 	}
@@ -48,19 +54,34 @@ func DailyCloses(ctx context.Context, symbol string, n int) ([]float64, error) {
 	if len(bars) == 0 {
 		bars = d.QfqDay
 	}
-	closes := make([]float64, 0, len(bars))
+	out := make([]Bar, 0, len(bars))
 	for _, b := range bars {
 		if len(b) < 3 {
 			continue
 		}
-		if s, ok := b[2].(string); ok {
-			if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
-				closes = append(closes, v)
-			}
+		date, _ := b[0].(string)
+		cs, _ := b[2].(string)
+		v, err := strconv.ParseFloat(cs, 64)
+		if date == "" || err != nil || v <= 0 {
+			continue
 		}
+		out = append(out, Bar{Date: date, Close: v})
 	}
-	if len(closes) == 0 {
-		return nil, fmt.Errorf("腾讯 K 线 %s 无有效收盘价", symbol)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("腾讯 K 线 %s 无有效数据", symbol)
+	}
+	return out, nil
+}
+
+// DailyCloses 拉取最近 n 个交易日的日收盘价 (升序)。
+func DailyCloses(ctx context.Context, symbol string, n int) ([]float64, error) {
+	bars, err := DailyBars(ctx, symbol, n)
+	if err != nil {
+		return nil, err
+	}
+	closes := make([]float64, 0, len(bars))
+	for _, b := range bars {
+		closes = append(closes, b.Close)
 	}
 	return closes, nil
 }

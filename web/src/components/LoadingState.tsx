@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, Loader2 } from 'lucide-react'
 
-const STEPS = ['技术面分析师', '基本面分析师', '消息面分析师', '风控官', '组合经理汇总']
+const DEFAULT_STEPS = ['技术面分析师', '基本面分析师', '消息面分析师', '风控官', '组合经理汇总']
 
-export default function LoadingState() {
+export default function LoadingState({ steps }: { steps?: string[] }) {
+  const STEPS = steps ?? DEFAULT_STEPS
   const [active, setActive] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setActive((i) => Math.min(i + 1, STEPS.length - 1)), 6000)
     return () => clearInterval(t)
-  }, [])
+  }, [STEPS.length])
 
   return (
     <div className="fade-up shadow-card rounded-2xl border border-line bg-white p-6">

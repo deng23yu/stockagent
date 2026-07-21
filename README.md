@@ -139,9 +139,11 @@ stockagent serve --port 8080    # 默认监听 127.0.0.1:8080
 ```
 
 - `GET /api/v1/analyze?code=600519&source=ths` — 分析接口，返回与 `--format json` 一致的 JSON
+- `GET /api/v1/debate?code=600519` — 多空辩论赛 (多方/空方两轮对辩 + 裁判裁决，5 次串行 LLM 调用)
 - `GET /api/v1/compare?codes=600519,000001` — 多股对比 (2~4 只并行分析，单只失败内联返回)
-- `GET /api/v1/market` — 主要指数行情 (上证/深成/创业板，服务端缓存 60s)
+- `GET /api/v1/market` — 主要指数行情 (上证/深成/创业板，含 30 日收盘价序列，服务端缓存 60s)
 - `GET /api/v1/hot-searches?days=7` — 热门搜索代码榜 (公开，来自访客库统计)
+- `GET /api/v1/activity?limit=15` — 实时访客动态 (公开，已脱敏: 仅城市级归属地 + 行为)
 - `GET /api/v1/access-log?limit=50` — 最近 analyze 访问记录 (IP/股票代码/数据源/缓存命中/状态/耗时)，数据来自访客库
 - `GET /api/v1/visits?limit=50&ip=&code=` — 访客记录 (时间/IP/归属地省市/路径/搜索内容/状态/耗时/UA)，需 admin token
 - `GET /api/v1/visits/stats` — 访客聚合统计 (今日/累计 PV/UV、Top 归属地、Top 搜索代码)，需 admin token

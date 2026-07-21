@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/deng23yu/stockagent/internal/eastmoney"
+	"github.com/deng23yu/stockagent/internal/news"
 	"github.com/deng23yu/stockagent/internal/tencent"
 	"github.com/deng23yu/stockagent/internal/track"
 )
@@ -218,5 +219,270 @@ func TestCompare(t *testing.T) {
 	}
 	if got["600519"] == 0 || got["000001"] == 0 {
 		t.Errorf("对比的每个代码都应有记录: %v", got)
+	}
+}
+
+// TestActivityEndpoint 验证实时动态接口: 公开访问、compare 合并、内网排除、不含 IP。
+func TestActivityEndpoint(t *testing.T) {
+	ts, tr := newVisitsTestServer(t, Options{AdminToken: "s3cret"})
+
+	tr.Record(track.Visit{Time: time.Now(), IP: "203.0.113.9", Method: "GET", Path: "/api/v1/analyze", Code: "600737", Status: 200})
+	for _, c := range []string{"600519", "000001"} {
+		tr.Record(track.Visit{Time: time.Now(), IP: "203.0.113.10", Method: "GET", Path: "/api/v1/compare",
+			Query: "codes=600519,000001", Code: c, Status: 200})
+	}
+	waitVisit(t, tr, track.Filter{Code: "600737"}, nil)
+
+	// 无 token 也应可访问 (公开接口)
+	code, body := getURL(t, ts.URL+"/api/v1/activity", nil)
+	if code != 200 {
+		t.Fatalf("activity = %d, want 200 (公开)", code)
+	}
+	var out struct {
+		Items []track.Activity `json:"items"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Items) != 2 {
+		t.Fatalf("items = %d, want 2: %+v", len(out.Items), out.Items)
+	}
+	if out.Items[0].Action != "compare" || len(out.Items[0].Codes) != 2 {
+		t.Errorf("首条应为合并的对比: %+v", out.Items[0])
+	}
+	// 响应中不得出现访客 IP
+	if strings.Contains(string(body), "203.0.113") {
+		t.Error("动态接口泄漏了访客 IP")
+	}
+}
+
+// debateLLMMock 按角色返回辩论内容 (与 debate 包测试同款)。
+func debateLLMMock(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var content string
+		switch {
+		case strings.Contains(string(b), "老多"):
+			content = "多方发言。"
+		case strings.Contains(string(b), "老空"):
+			content = "空方发言。"
+		case strings.Contains(string(b), "裁判"):
+			content = `{"winner":"bull","bull_score":70,"bear_score":55,"reasoning":"多方更扎实。"}`
+		default:
+			content = "?"
+		}
+		c, _ := json.Marshal(content)
+		io.WriteString(w, `{"choices":[{"message":{"content":`+string(c)+`}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestDebate 验证辩论接口: 五轮结构、裁决、缓存。
+func TestDebate(t *testing.T) {
+	setupMocks(t) // 东财数据 mock
+	cfg := testConfig()
+	cfg.LLM.BaseURL = debateLLMMock(t).URL
+	srv, err := New(cfg, Options{CacheTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	code, body := getURL(t, ts.URL+"/api/v1/debate?code=600519", nil)
+	if code != 200 {
+		t.Fatalf("debate = %d: %s", code, body)
+	}
+	var d struct {
+		Name  string `json:"name"`
+		Turns []struct {
+			Role  string `json:"role"`
+			Round int    `json:"round"`
+		} `json:"turns"`
+		Verdict struct {
+			Winner    string `json:"winner"`
+			BullScore int    `json:"bull_score"`
+		} `json:"verdict"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Turns) != 4 || d.Turns[0].Role != "bull" || d.Turns[1].Role != "bear" {
+		t.Fatalf("辩论轮次异常: %s", body[:200])
+	}
+	if d.Verdict.Winner != "bull" || d.Verdict.BullScore != 70 {
+		t.Errorf("裁决异常: %+v", d.Verdict)
+	}
+	if d.Name != "贵州茅台" {
+		t.Errorf("名称 = %q, want 贵州茅台", d.Name)
+	}
+
+	// 第二次应命中缓存
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/debate?code=600519", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.Header.Get("X-Cache") != "hit" {
+		t.Error("第二次辩论请求应命中缓存")
+	}
+}
+
+// TestSignalRecording 验证分析成功后自动记录 AI 信号 (缓存命中不重复记)。
+func TestSignalRecording(t *testing.T) {
+	llmSrv := setupMocks(t)
+	cfg := testConfig()
+	cfg.LLM.BaseURL = llmSrv.URL
+	tr, err := track.Open(filepath.Join(t.TempDir(), "visits.db"), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg, Options{CacheTTL: time.Minute, Tracker: tr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	getURL(t, ts.URL+"/api/v1/analyze?code=600519", nil)
+	getURL(t, ts.URL+"/api/v1/analyze?code=600519", nil) // 缓存命中，不应重复记
+
+	deadline := time.Now().Add(3 * time.Second)
+	var sigs []track.Signal
+	for time.Now().Before(deadline) {
+		sigs, err = tr.RecentSignals(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sigs) >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(sigs) != 1 {
+		t.Fatalf("信号 = %d, want 1 (缓存命中不重复记)", len(sigs))
+	}
+	if sigs[0].Code != "600519" || sigs[0].Signal != "bullish" || sigs[0].Price != 1253 {
+		t.Errorf("信号内容异常: %+v", sigs[0])
+	}
+}
+
+// TestNewsEndpoint 验证宏观快讯: 解析与 5 分钟缓存 (上游只打一次)。
+func TestNewsEndpoint(t *testing.T) {
+	var hits atomic.Int32
+	newsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		io.WriteString(w, `{"result":{"status":{"code":0},"data":{"feed":{"list":[
+			{"id":1,"rich_text":"【证监会召开发布会】回应市场关切。","create_time":"2026-07-21 19:22:54"}]}}}}`)
+	}))
+	defer newsSrv.Close()
+	old := news.FeedURL
+	news.FeedURL = newsSrv.URL
+	defer func() { news.FeedURL = old }()
+
+	srv, err := New(testConfig(), Options{CacheTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	code, body := getURL(t, ts.URL+"/api/v1/news", nil)
+	if code != 200 {
+		t.Fatalf("news = %d: %s", code, body)
+	}
+	var out struct {
+		Items []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Items) != 1 || out.Items[0].Title != "证监会召开发布会" {
+		t.Fatalf("快讯解析异常: %s", body)
+	}
+	getURL(t, ts.URL+"/api/v1/news", nil)
+	if got := hits.Load(); got != 1 {
+		t.Errorf("缓存生效期上游被重复调用: %d 次", got)
+	}
+}
+
+// capitalMockServer 按路径/报表名路由: fflow → 资金流; RZRQ → 两融; MUTUAL → 北向。
+func capitalMockServer(t *testing.T, failNorth bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("reportName")
+		switch {
+		case q == "": // fflow 请求无 reportName 参数
+			io.WriteString(w, `{"rc":0,"data":{"klines":["2026-07-21,-579159136,-367185,579526224,-484363808,-94795328"]}}`)
+		case strings.Contains(q, "RZRQ"):
+			io.WriteString(w, `{"success":true,"result":{"data":[{"DATE":"2026-07-20 00:00:00","RZYE":18189764566,"RQYE":159313275,"RZRQYE":18349077841,"RZMRE":1099058777,"RZYEZB":1.0961,"RZMRE5D":3418179149}]}}`)
+		case strings.Contains(q, "MUTUAL"):
+			if failNorth {
+				io.WriteString(w, `{"success":false,"result":null}`)
+				return
+			}
+			io.WriteString(w, `{"success":true,"result":{"data":[{"TRADE_DATE":"2026-06-30 00:00:00","HOLD_SHARES":53711656,"HOLD_MARKET_CAP":63674631071.44,"HOLD_SHARES_RATIO":4.29}]}}`)
+		default:
+			io.WriteString(w, `{"success":false,"result":null}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	oldDC, oldFF := eastmoney.DataCenterURL, eastmoney.FFlowBaseURL
+	eastmoney.DataCenterURL, eastmoney.FFlowBaseURL = srv.URL, srv.URL
+	t.Cleanup(func() { eastmoney.DataCenterURL, eastmoney.FFlowBaseURL = oldDC, oldFF })
+	return srv
+}
+
+// TestCapitalEndpoint 验证资金面板: 三项数据、部分失败降级、缓存与参数校验。
+func TestCapitalEndpoint(t *testing.T) {
+	capitalMockServer(t, true) // 北向失败, 验证降级
+	srv, err := New(testConfig(), Options{CacheTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	if code, _ := getURL(t, ts.URL+"/api/v1/capital?code=abc", nil); code != 400 {
+		t.Errorf("非法代码 = %d, want 400", code)
+	}
+
+	code, body := getURL(t, ts.URL+"/api/v1/capital?code=600519", nil)
+	if code != 200 {
+		t.Fatalf("capital = %d: %s", code, body)
+	}
+	var out struct {
+		Margin *struct {
+			RZYE float64 `json:"rzye"`
+		} `json:"margin"`
+		FundFlow []struct {
+			Main float64 `json:"main"`
+		} `json:"fund_flow"`
+		Northbound *struct {
+			Shares float64 `json:"shares"`
+		} `json:"northbound"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Margin == nil || out.Margin.RZYE != 18189764566 {
+		t.Errorf("两融缺失: %s", body)
+	}
+	if len(out.FundFlow) != 1 || out.FundFlow[0].Main != -579159136 {
+		t.Errorf("资金流缺失: %s", body)
+	}
+	if out.Northbound != nil {
+		t.Errorf("北向失败应降级为 null: %s", body)
 	}
 }

@@ -95,9 +95,11 @@ stockagent serve --port 8080    # listens on 127.0.0.1:8080 by default
 ```
 
 - `GET /api/v1/analyze?code=600519&source=ths` — analysis endpoint, same JSON as `--format json`
+- `GET /api/v1/debate?code=600519` — bull-vs-bear debate (two rebuttal rounds + judge verdict, 5 sequential LLM calls)
 - `GET /api/v1/compare?codes=600519,000001` — multi-stock compare (2-4 codes analyzed in parallel, per-code errors inlined)
-- `GET /api/v1/market` — major index quotes (SSE/SZSE/ChiNext, 60s server-side cache)
+- `GET /api/v1/market` — major index quotes (SSE/SZSE/ChiNext with 30-day closes, 60s server-side cache)
 - `GET /api/v1/hot-searches?days=7` — hot searched codes (public, aggregated from the visitor DB)
+- `GET /api/v1/activity?limit=15` — live visitor activity feed (public, anonymized to city level)
 - `GET /api/v1/access-log?limit=50` — recent analyze access records (IP/code/source/cache-hit/status/latency), served from the visitor DB
 - `GET /api/v1/visits?limit=50&ip=&code=` — visitor records (time/IP/geo province+city/path/search query/status/latency/UA), requires admin token
 - `GET /api/v1/visits/stats` — visitor aggregates (today/total PV/UV, top regions, top searched codes), requires admin token

@@ -1,22 +1,29 @@
 import { useCallback, useRef, useState } from 'react'
 import { AlertTriangle, ScrollText, Sparkles } from 'lucide-react'
-import { analyzeStock, compareStocks, type CompareItem, type Report } from './lib/api'
+import { analyzeStock, compareStocks, fetchDebate, type CompareItem, type Debate, type Report } from './lib/api'
 import SearchBar from './components/SearchBar'
 import MarketBar from './components/MarketBar'
+import ActivityFeed from './components/ActivityFeed'
+import NewsSection from './components/NewsSection'
 import LoadingState from './components/LoadingState'
 import ReportHeader from './components/ReportHeader'
+import CapitalPanel from './components/CapitalPanel'
 import SignalCards from './components/SignalCards'
 import VerdictCard from './components/VerdictCard'
 import CompareCards from './components/CompareCards'
+import DebateView from './components/DebateView'
 import VisitsPanel from './components/VisitsPanel'
 import Footer from './components/Footer'
 
 type Status =
   | { kind: 'idle' }
-  | { kind: 'loading' }
+  | { kind: 'loading'; mode: 'analyze' | 'debate' | 'compare' }
   | { kind: 'success'; report: Report; cached: boolean }
   | { kind: 'compare'; items: CompareItem[] }
+  | { kind: 'debate'; debate: Debate }
   | { kind: 'error'; message: string }
+
+const DEBATE_STEPS = ['数据准备', '多方立论', '空方立论', '多方反驳', '空方反驳', '裁判裁决']
 
 export default function App() {
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
@@ -27,7 +34,7 @@ export default function App() {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
-    setStatus({ kind: 'loading' })
+    setStatus({ kind: 'loading', mode: 'analyze' })
     try {
       const { report, cached } = await analyzeStock(code, source, ac.signal)
       setStatus({ kind: 'success', report, cached })
@@ -41,7 +48,7 @@ export default function App() {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
-    setStatus({ kind: 'loading' })
+    setStatus({ kind: 'loading', mode: 'compare' })
     try {
       const items = await compareStocks(codes, source, ac.signal)
       setStatus({ kind: 'compare', items })
@@ -49,6 +56,26 @@ export default function App() {
       if ((e as Error).name === 'AbortError') return
       setStatus({ kind: 'error', message: (e as Error).message })
     }
+  }, [])
+
+  const onDebate = useCallback(async (code: string, source: string) => {
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+    setStatus({ kind: 'loading', mode: 'debate' })
+    try {
+      const debate = await fetchDebate(code, source, ac.signal)
+      setStatus({ kind: 'debate', debate })
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      setStatus({ kind: 'error', message: (e as Error).message })
+    }
+  }, [])
+
+  // 切换分析模式: 中止在途请求并回到初始页 (避免残留上一模式的结果)
+  const onModeChange = useCallback(() => {
+    abortRef.current?.abort()
+    setStatus({ kind: 'idle' })
   }, [])
 
   return (
@@ -97,11 +124,25 @@ export default function App() {
           </p>
         </section>
 
-        <SearchBar onSearch={onSearch} onCompare={onCompare} loading={status.kind === 'loading'} />
+        <SearchBar
+          onSearch={onSearch}
+          onCompare={onCompare}
+          onDebate={onDebate}
+          onModeChange={onModeChange}
+          loading={status.kind === 'loading'}
+        />
+        <ActivityFeed />
 
         <main className="mt-10 space-y-4">
-          {status.kind === 'idle' && <IdleHint />}
-          {status.kind === 'loading' && <LoadingState />}
+          {status.kind === 'idle' && (
+            <>
+              <IdleHint />
+              <NewsSection />
+            </>
+          )}
+          {status.kind === 'loading' && (
+            <LoadingState steps={status.mode === 'debate' ? DEBATE_STEPS : undefined} />
+          )}
           {status.kind === 'error' && (
             <div className="fade-up flex items-start gap-2.5 rounded-2xl border border-bull/20 bg-bull-soft px-5 py-4 text-sm text-bull">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -111,11 +152,15 @@ export default function App() {
           {status.kind === 'success' && (
             <>
               <ReportHeader report={status.report} cached={status.cached} className="fade-up" />
+              <CapitalPanel code={status.report.code} />
               <SignalCards results={status.report.results} className="fade-up [animation-delay:120ms]" />
               <VerdictCard final={status.report.final} className="fade-up [animation-delay:240ms]" />
             </>
           )}
           {status.kind === 'compare' && <CompareCards items={status.items} />}
+          {status.kind === 'debate' && (
+            <DebateView key={status.debate.code + status.debate.generated_at} debate={status.debate} />
+          )}
         </main>
 
         <Footer report={status.kind === 'success' ? status.report : null} />
